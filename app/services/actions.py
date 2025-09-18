@@ -15,6 +15,8 @@ from ..models.account_limit import AccountLimit
 from ..models.profile import Profile
 
 import websockets  # make sure 'websockets' is in requirements.txt
+import logging
+like_log = logging.getLogger("app.services.actions.like_recent")
 
 
 
@@ -383,18 +385,28 @@ async def perform_like_recent(ws_url: str, usernames: List[str], per_user: int =
     Returns per-username results with per-post statuses.
     """
     per_user = max(1, int(per_user or 2))
+    
     results: List[Dict[str, Any]] = []
+    like_log.debug(f"Start: ws_url={ws_url}, usernames={usernames}, per_user={per_user}")
 
     # JS snippets from your verified probes
     JS_CLICK_FIRST = r"""
     (function () {
-      const sel = 'a[href*="/reel/"], a[href*="/p/"]';
+      const sel = 'a[href*="/reel/"], a[href*="/p/"], article a, div[role="link"]';
       const a = document.querySelector(sel);
-      if (!a) return { clicked: false, reason: "no_thumb" };
-      a.click();
-      return { clicked: true, href: a.getAttribute("href") };
+      if (!a) {
+        return { clicked: false, reason: "no_thumb" };
+      }
+      try {
+        a.click();
+        return { clicked: true, href: a.getAttribute("href") || null };
+      } catch (e) {
+        return { clicked: false, reason: String(e) };
+      }
     })();
     """
+    
+
 
     JS_DETECT_LIKE = r"""
     (function () {
@@ -496,69 +508,106 @@ async def perform_like_recent(ws_url: str, usernames: List[str], per_user: int =
 
     async with CDPClient(ws_url) as cdp:
         session_id = await cdp.get_page_session()
-
+        like_log.debug(f"[like_recent] Got session_id={session_id}")
+    
         for username in usernames:
             user_result: Dict[str, Any] = {"username": username, "results": []}
-
+            like_log.debug(f"[like_recent] Visiting profile: {username}")
+    
             # 1) Go to profile
             try:
                 await cdp.goto(session_id, f"https://www.instagram.com/{username}/", wait="domcontent")
+                like_log.debug(f"[like_recent] Navigated to profile {username}")
             except Exception as e:
+                like_log.debug(f"[like_recent] ERROR navigating to {username}: {e}")
                 results.append({**user_result, "status": "error", "error": f"nav_profile: {e}"})
                 continue
-
+            
             await asyncio.sleep(0.6 + random.random() * 0.6)
-
+            # 🔎 dynamic wait for thumbnails to load
+            thumb_found = False
+            for _ in range(10):  # retry up to ~5s (10 * 0.5s)
+                opened = await cdp.eval(session_id, JS_CLICK_FIRST)
+                if isinstance(opened, dict) and opened.get("clicked"):
+                    like_log.debug(f"[like_recent] First post clicked for {username}: {opened}")
+                    thumb_found = True
+                    break
+                await asyncio.sleep(0.5)
+            
+            if not thumb_found:
+                like_log.debug(f"[like_recent] No media found for {username}, skipping")
+                results.append({**user_result, "status": "no_media"})
+                continue
+    
             # 2) Open first grid item (reel/post)
             opened = await cdp.eval(session_id, JS_CLICK_FIRST)
+            like_log.debug(f"[like_recent] Click first post result for {username}: {opened}")
+    
             if not (isinstance(opened, dict) and opened.get("clicked")):
                 results.append({**user_result, "status": "no_media", "detail": opened})
+                like_log.debug(f"[like_recent] No media found for {username}, skipping")
                 continue
-
+            
             await asyncio.sleep(0.6 + random.random() * 0.5)
-
+    
             # 3) Loop N posts inside modal
             for i in range(per_user):
                 try:
                     await asyncio.sleep(0.4 + random.random() * 0.4)
-
-                    # Detect Like/Unlike
+    
                     state = await cdp.eval(session_id, JS_DETECT_LIKE) or {"found": False}
+                    like_log.debug(f"[like_recent] Post {i+1}/{per_user} state={state}")
+    
                     if not state.get("found"):
                         user_result["results"].append({"index": i + 1, "status": "notfound"})
                     elif state.get("already"):
                         user_result["results"].append({"index": i + 1, "status": "already_liked"})
                     else:
-                        # Click Like
                         clicked = await cdp.eval(session_id, JS_CLICK_LIKE)
+                        like_log.debug(f"[like_recent] Click like result={clicked}")
                         await asyncio.sleep(0.35 + random.random() * 0.35)
+    
                         verify = await cdp.eval(session_id, JS_DETECT_LIKE) or {}
+                        like_log.debug(f"[like_recent] Verify after click={verify}")
+    
                         if verify.get("found") and verify.get("already"):
                             user_result["results"].append({"index": i + 1, "status": "liked"})
                         else:
-                            user_result["results"].append({"index": i + 1, "status": "error", "error": "toggle_failed", "clicked": clicked})
-
-                    # Move to next, unless this was the last one
+                            user_result["results"].append({
+                                "index": i + 1,
+                                "status": "error",
+                                "error": "toggle_failed",
+                                "clicked": clicked
+                            })
+    
+                    # Move to next post unless last one
                     if i < per_user - 1:
                         n = await cdp.eval(session_id, JS_FIND_NEXT)
+                        like_log.debug(f"[like_recent] Find next result={n}")
+    
                         if not (isinstance(n, dict) and n.get("found")):
-                            # try arrow fallback directly
                             n2 = await cdp.eval(session_id, JS_CLICK_NEXT_OR_ARROW)
+                            like_log.debug(f"[like_recent] Arrow fallback result={n2}")
                             if not (isinstance(n2, dict) and n2.get("clicked")):
-                                # no next available; stop early
+                                like_log.debug(f"[like_recent] No next available, stopping early")
                                 break
                         else:
                             _ = await cdp.eval(session_id, JS_CLICK_NEXT_OR_ARROW)
-
+                            like_log.debug(f"[like_recent] Clicked next via button")
+    
                 except Exception as e:
+                    like_log.debug(f"[like_recent] ERROR in post loop {i+1}: {e}")
                     user_result["results"].append({"index": i + 1, "status": "error", "error": str(e)})
-
+    
                 await asyncio.sleep(0.6 + random.random() * 0.7)
-
+    
             results.append(user_result)
+            like_log.debug(f"[like_recent] Finished {username}: {user_result}")
+    
             await asyncio.sleep(0.8 + random.random() * 1.2)
-
+    
     return {"results": results}
+    
 
 
 

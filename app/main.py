@@ -14,6 +14,35 @@ from app.api.integrations import router as integrations_router
 from app.api.profiles import router as profiles_router
 from app.api.engine import router as engine_router
 from .api.actions import router as actions_router
+import logging
+logging.basicConfig(level=logging.DEBUG)
+from logging.config import dictConfig
+
+dictConfig({
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "std": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "std"},
+    },
+    "root": {
+        "level": "INFO",          # root at INFO (no noisy DEBUG from libs)
+        "handlers": ["console"],
+    },
+    "loggers": {
+        # silence noisy deps
+        "websockets":        {"level": "WARNING"},
+        "websockets.client": {"level": "WARNING"},
+        "uvicorn":           {"level": "INFO"},
+        "uvicorn.error":     {"level": "INFO"},
+        "uvicorn.access":    {"level": "WARNING"},
+
+        # our targeted debug channel for like_recent only
+        "app.services.actions.like_recent": {"level": "DEBUG", "handlers": ["console"], "propagate": False},
+    },
+})
 
 app = FastAPI(title="IG Automation API")
 app.include_router(health_router,      prefix="/health",       tags=["health"])
