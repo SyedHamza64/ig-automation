@@ -67,3 +67,16 @@ def get_account(account_id: int, db: Session = Depends(get_db)):
     if not acc:
         raise HTTPException(status_code=404, detail="account not found")
     return acc
+
+
+@router.get("/{account_id}/adspower", tags=["profiles"])
+def account_adspower_info(account_id: int, db: Session = Depends(get_db)):
+    acc: Optional[Account] = db.query(Account).get(account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="account not found")
+    if not acc.profile_id:
+        raise HTTPException(status_code=400, detail="account has no profile_id linked")
+
+    client = AdsPowerClient()
+    info = client.get_profile_info(str(acc.profile_id))
+    return {"account_id": acc.id, "profile_id": acc.profile_id, "adspower": info}

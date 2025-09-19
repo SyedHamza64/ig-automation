@@ -533,7 +533,7 @@ async def perform_like_recent(ws_url: str, usernames: List[str], per_user: int =
                     thumb_found = True
                     break
                 await asyncio.sleep(0.5)
-            
+
             if not thumb_found:
                 like_log.debug(f"[like_recent] No media found for {username}, skipping")
                 results.append({**user_result, "status": "no_media"})

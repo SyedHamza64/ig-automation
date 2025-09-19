@@ -5,6 +5,8 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api import logs as logs_router
 from app.api.health import router as health_router
 from app.api.accounts import router as accounts_router
 from app.api.templates import router as templates_router
@@ -45,6 +47,17 @@ dictConfig({
 })
 
 app = FastAPI(title="IG Automation API")
+# CORS: allow Vite dev server (http://localhost:5173 and http://127.0.0.1:5173)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(health_router,      prefix="/health",       tags=["health"])
 app.include_router(auth_router)
 app.include_router(integrations_router, prefix="/integrations", tags=["integrations"])
@@ -54,3 +67,5 @@ app.include_router(templates_router,   prefix="/templates",    tags=["templates"
 app.include_router(targets_router,     prefix="/targets",      tags=["targets"])
 app.include_router(engine_router,      prefix="/engine",       tags=["engine"])
 app.include_router(actions_router)
+app.include_router(logs_router.router)
+

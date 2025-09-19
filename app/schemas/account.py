@@ -1,22 +1,34 @@
+from typing import Optional
 from pydantic import BaseModel, Field
-from typing import Optional, Dict
+
 
 class AccountBase(BaseModel):
-    handle: str = Field(..., min_length=2, max_length=50)
-    timezone: str = "Asia/Karachi"
-    status: str = "new"
-    limits_json: Optional[Dict] = None
+    username: str = Field(alias="handle")
+    profile_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True   # replaces orm_mode in v2
+        populate_by_name = True
+
 
 class AccountCreate(AccountBase):
     pass
 
-class AccountUpdate(BaseModel):
-    handle: Optional[str] = None
-    timezone: Optional[str] = None
-    status: Optional[str] = None
-    limits_json: Optional[Dict] = None
 
-class AccountOut(AccountBase):
-    id: int
+class AccountUpdate(BaseModel):
+    username: Optional[str] = Field(None, alias="handle")
+    profile_id: Optional[int] = None
+
     class Config:
         from_attributes = True
+        populate_by_name = True
+
+
+class AccountOut(BaseModel):
+    id: int
+    username: str = Field(alias="handle")
+    profile_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+        populate_by_name = True
