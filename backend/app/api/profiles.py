@@ -3,13 +3,15 @@ import traceback
 import logging
 import socket
 import re
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 from datetime import datetime, timezone
+from typing import List, Dict, Any, Optional
+
 import requests
-from app.core.config import settings
+from fastapi import APIRouter, Depends, HTTPException, Body
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.profile import Profile
 from app.models.account import Account
@@ -20,34 +22,158 @@ from app.services.actions import ensure_profile_ws, CDPClient
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# ✅ SINGLE router for the whole module
+router = APIRouter(tags=["profiles"])
 
+# ---------- LIST (your existing working endpoint) ----------
+@router.get("")
+def list_profiles(
+    linked: Optional[bool] = None,               # ⬅️ NEW
+    db: Session = Depends(get_db),
+):
+    q = db.query(Profile).outerjoin(Account, Profile.account_id == Account.id)
+
+    if linked is True:
+        q = q.filter(Profile.account_id.isnot(None))
+    elif linked is False:
+        q = q.filter(Profile.account_id.is_(None))
+
+    rows = q.all()
+    return [
+        {
+            "id": p.id,
+            "account_id": p.account_id,
+            "account_handle": getattr(p.account, "handle", None) if p.account else None,
+            "adspower_profile_id": p.adspower_profile_id,
+            "health": p.health,
+            "last_ws_puppeteer": p.last_ws_puppeteer,
+        }
+        for p in rows
+    ]
+
+# ---------- COMPARE (new) ----------
+@router.post("/compare")
+def compare_profiles(
+    ids: List[str] = Body(..., embed=True),  # expects {"ids": ["k14wf88c", "k14gx5jn", ...]}
+    db: Session = Depends(get_db),
+):
+    norm_ids = [i.strip() for i in ids if i and str(i).strip()]
+    if not norm_ids:
+        return {"linked": [], "unlinked": []}
+
+    rows = (
+        db.query(Profile)
+        .outerjoin(Account, Profile.account_id == Account.id)
+        .filter(Profile.adspower_profile_id.in_(norm_ids))
+        .all()
+    )
+
+    found_map = {p.adspower_profile_id: p for p in rows}
+    linked: List[Dict[str, Any]] = []
+    for p in rows:
+        linked.append({
+            "adspower_profile_id": p.adspower_profile_id,
+            "profile_db_id": p.id,
+            "account_id": p.account_id,
+            "account_handle": getattr(p.account, "handle", None) if p.account else None,
+            "health": p.health,
+            "last_ws_puppeteer": p.last_ws_puppeteer,
+        })
+
+    unlinked = [i for i in norm_ids if i not in found_map]
+
+    return {"linked": linked, "unlinked": unlinked}
+
+# ---------- LOOKUP BY ADSPower ID ----------
+@router.get("/by-adspower/{adspower_id}")
+def get_by_adspower(adspower_id: str, db: Session = Depends(get_db)):
+    p: Optional[Profile] = (
+        db.query(Profile)
+        .outerjoin(Account, Profile.account_id == Account.id)
+        .filter(Profile.adspower_profile_id == adspower_id)
+        .first()
+    )
+    if not p:
+        return {"linked": False, "adspower_profile_id": adspower_id}
+    return {
+        "linked": True,
+        "adspower_profile_id": adspower_id,
+        "profile_db_id": p.id,
+        "account_id": p.account_id,
+        "account_handle": getattr(p.account, "handle", None) if p.account else None,
+        "health": p.health,
+        "last_ws_puppeteer": p.last_ws_puppeteer,
+    }
+
+# ---------- ATTACH & DETACH ----------
 @router.post("/attach", dependencies=[Depends(require_admin)])
-def attach_profile(account_id: int, adspower_profile_id: str, db: Session = Depends(get_db)):
+def attach_profile(
+    account_id: int,
+    adspower_profile_id: str,
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
     acc = db.query(Account).get(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="account not found")
 
-    # ensure this AdsPower profile isn't already attached
-    existing = db.query(Profile).filter(Profile.adspower_profile_id == adspower_profile_id).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="adspower_profile_id already attached")
+    # global uniqueness of AdsPower id
+    existing_by_adsp = db.query(Profile).filter(Profile.adspower_profile_id == adspower_profile_id).first()
+    if existing_by_adsp and existing_by_adsp.account_id not in (None, account_id):
+        raise HTTPException(status_code=409, detail=f"adspower_profile_id already attached to account_id={existing_by_adsp.account_id}")
 
-    p = Profile(account_id=account_id, adspower_profile_id=adspower_profile_id, health="unknown")
-    db.add(p)
-    db.commit()
-    db.refresh(p)
-    return {"id": p.id, "account_id": p.account_id, "adspower_profile_id": p.adspower_profile_id, "health": p.health}
+    current = db.query(Profile).filter(Profile.account_id == account_id).first()
+    if current and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=f"account_id {account_id} already linked to {current.adspower_profile_id} (profile_db_id={current.id}); pass force=true to swap",
+        )
 
+    if existing_by_adsp:
+        existing_by_adsp.account_id = account_id
+        db.add(existing_by_adsp); db.commit(); db.refresh(existing_by_adsp)
+        if current and current.id != existing_by_adsp.id:
+            current.account_id = None
+            db.add(current); db.commit()
+        p = existing_by_adsp
+    else:
+        p = Profile(account_id=account_id, adspower_profile_id=adspower_profile_id, health="unknown")
+        db.add(p); db.commit(); db.refresh(p)
+        if current and current.id != p.id:
+            current.account_id = None
+            db.add(current); db.commit()
+
+    return {
+        "id": p.id,
+        "account_id": p.account_id,
+        "adspower_profile_id": p.adspower_profile_id,
+        "health": p.health,
+        "swapped": bool(current),
+    }
+
+
+@router.post("/{profile_db_id}/detach", dependencies=[Depends(require_admin)])
+def detach_profile(profile_db_id: int, db: Session = Depends(get_db)):
+    p = db.query(Profile).get(profile_db_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="profile not found")
+    if p.account_id is None:
+        return {"id": p.id, "account_id": None, "adspower_profile_id": p.adspower_profile_id, "detached": False, "reason": "already unlinked"}
+    old = p.account_id
+    p.account_id = None
+    db.add(p); db.commit(); db.refresh(p)
+    return {"id": p.id, "account_id": None, "adspower_profile_id": p.adspower_profile_id, "detached": True, "was_linked_to": old}
+
+
+# ---------- OPEN ----------
 @router.post("/{profile_db_id}/open", dependencies=[Depends(require_admin)])
 async def open_profile(profile_db_id: int, db: Session = Depends(get_db)):
-    p = db.query(Profile).get(profile_db_id)
+    p = db.query(Profile).get(profile_db_id)  # or db.get(Profile, profile_db_id)
     if not p:
         raise HTTPException(status_code=404, detail="profile not found")
 
     res = await adspower_client.open_profile(p.adspower_profile_id)
 
-    # Heuristic: AdsPower often returns JSON with {"code":0, "data":{...}} on success.
     ok = False
     pupp_ws = None
     sel_ws = None
@@ -65,7 +191,7 @@ async def open_profile(profile_db_id: int, db: Session = Depends(get_db)):
         if pupp_ws: p.last_ws_puppeteer = pupp_ws
         if sel_ws:  p.last_ws_selenium  = sel_ws
         db.add(p); db.commit(); db.refresh(p)
-        # --- QoL fallback: if AdsPower open gave no WS, fetch active info ---
+        # QoL fallback
         if not pupp_ws:
             try:
                 url = f"{settings.ADSPOWER_BASE_URL}/api/v1/browser/active?user_id={p.adspower_profile_id}"
@@ -79,19 +205,19 @@ async def open_profile(profile_db_id: int, db: Session = Depends(get_db)):
                         db.add(p); db.commit(); db.refresh(p)
             except Exception as e:
                 logger.warning(f"WS auto-refresh failed: {e}")
-        # --- end QoL fallback ---
 
     return {"profile_db_id": profile_db_id, "ok": ok, "result": res}
 
+# ---------- CLOSE ----------
 @router.post("/{profile_db_id}/close", dependencies=[Depends(require_admin)])
 async def close_profile(profile_db_id: int, db: Session = Depends(get_db)):
     p = db.query(Profile).get(profile_db_id)
     if not p:
         raise HTTPException(status_code=404, detail="profile not found")
-
     res = await adspower_client.close_profile(p.adspower_profile_id)
     return {"profile_db_id": profile_db_id, "result": res}
 
+# ---------- CONNECT INFO ----------
 @router.get("/{profile_id}/connect-info")
 def get_connect_info(profile_id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
     profile = db.get(Profile, profile_id)
@@ -133,9 +259,7 @@ def get_connect_info(profile_id: int, db: Session = Depends(get_db), _=Depends(r
         },
     }
 
-
-
-
+# ---------- PROBE ----------
 @router.get("/{profile_db_id}/probe", dependencies=[Depends(require_admin)])
 async def probe_profile(profile_db_id: int, db: Session = Depends(get_db)):
     p = db.query(Profile).get(profile_db_id)
@@ -144,12 +268,10 @@ async def probe_profile(profile_db_id: int, db: Session = Depends(get_db)):
 
     async def attempt(ws: str):
         try:
-            # extra safety timeout at endpoint level
             return await asyncio.wait_for(probe_cdp(ws, timeout_sec=7.0), timeout=10.0), None
         except Exception:
             return None, traceback.format_exc(limit=5)
 
-    # Try with stored WS first
     if p.last_ws_puppeteer:
         info, err1 = await attempt(p.last_ws_puppeteer)
         if info:
@@ -162,7 +284,6 @@ async def probe_profile(profile_db_id: int, db: Session = Depends(get_db)):
     else:
         err1 = "no stored ws_puppeteer"
 
-    # Refresh WS by opening the profile once
     res = await adspower_client.open_profile(p.adspower_profile_id)
     data = res.get("data") if isinstance(res, dict) else None
     ws = data.get("ws") if isinstance(data, dict) else None
@@ -179,7 +300,6 @@ async def probe_profile(profile_db_id: int, db: Session = Depends(get_db)):
     p.health = "ok"
     db.add(p); db.commit(); db.refresh(p)
 
-    # Retry with fresh WS
     info2, err2 = await attempt(p.last_ws_puppeteer)
     if info2:
         return {
@@ -199,38 +319,32 @@ async def probe_profile(profile_db_id: int, db: Session = Depends(get_db)):
         },
     )
 
+# ---------- WS CHECK ----------
 @router.get("/{profile_db_id}/ws-check", dependencies=[Depends(require_admin)])
 def check_ws_connectivity(profile_db_id: int, db: Session = Depends(get_db)):
-    """Simple connectivity check that avoids Playwright - just tests if the WS port is listening"""
     p = db.query(Profile).get(profile_db_id)
     if not p:
         raise HTTPException(status_code=404, detail="profile not found")
-    
     if not p.last_ws_puppeteer:
         return {"ok": False, "error": "no stored ws_puppeteer"}
-    
+
     try:
-        # Parse the WebSocket URL to extract host and port
-        # Expected format: ws://127.0.0.1:50930/devtools/browser/...
         ws_url = p.last_ws_puppeteer
         match = re.match(r'ws://([^:]+):(\d+)/', ws_url)
         if not match:
             return {"ok": False, "error": f"invalid ws URL format: {ws_url}"}
-        
         host, port = match.groups()
         port = int(port)
-        
-        # Try a quick TCP connection to the host:port
-        with socket.create_connection((host, port), timeout=2) as sock:
+        with socket.create_connection((host, port), timeout=2):
             return {"ok": True, "host": host, "port": port, "ws_url": ws_url}
-            
     except socket.timeout:
         return {"ok": False, "error": f"connection timeout to {host}:{port}"}
     except ConnectionRefused:
         return {"ok": False, "error": f"connection refused to {host}:{port}"}
     except Exception as e:
         return {"ok": False, "error": f"connection failed: {str(e)}"}
-    
+
+# ---------- EVAL ----------
 class EvalRequest(BaseModel):
     expression: str
 
@@ -243,7 +357,6 @@ async def eval_js(profile_id: int, body: EvalRequest, db: Session = Depends(get_
     if not ws_url:
         raise HTTPException(status_code=400, detail="no CDP ws; open profile first")
 
-    # Evaluate in the first page session
     async with CDPClient(ws_url) as cdp:
         session_id = await cdp.get_page_session()
         try:
@@ -251,3 +364,14 @@ async def eval_js(profile_id: int, body: EvalRequest, db: Session = Depends(get_
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"eval error: {e}")
     return {"value": val}
+
+# ---------- DELETE ----------
+# app/api/profiles.py
+@router.delete("/{profile_db_id}", dependencies=[Depends(require_admin)])
+def delete_profile(profile_db_id: int, db: Session = Depends(get_db)):
+    p = db.query(Profile).get(profile_db_id)  # or db.get(Profile, profile_db_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="profile not found")
+    db.delete(p)
+    db.commit()
+    return {"deleted_id": profile_db_id}

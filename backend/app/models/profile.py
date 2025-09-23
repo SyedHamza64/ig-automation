@@ -2,6 +2,8 @@ from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.models.base import Base
+import sqlalchemy as sa
+
 
 
 class Profile(Base):
@@ -10,12 +12,8 @@ class Profile(Base):
     id = Column(Integer, primary_key=True)
 
     # Link to our logical IG account
-    account_id = Column(
-        Integer,
-        ForeignKey("accounts.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    account_id = sa.Column(sa.Integer, sa.ForeignKey("accounts.id"), nullable=True, index=True)
+
 
     # AdsPower's profile identifier (a.k.a. user_id shown in AdsPower UI)
     adspower_profile_id = Column(String, unique=True, nullable=False, index=True)

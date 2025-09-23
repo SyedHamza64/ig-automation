@@ -5,7 +5,7 @@ from typing import Optional, List
 from app.db.session import get_db
 from app.models.action_log import ActionLog
 
-router = APIRouter(prefix="/logs", tags=["logs"])
+router = APIRouter()
 
 @router.get("", response_model=List[dict])
 def list_logs(
