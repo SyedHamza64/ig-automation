@@ -341,11 +341,11 @@ async def perform_mass_follow_stream(
         const a = item.querySelector('a[href^="/"][href$="/"]');
         if(a){
           const href = a.getAttribute('href')||'';
-          const m = href.match(/^\/([^\/]+)\/$/);
+          const m = href.match(/^\/([^/]+)\/$/);
           if(m) username = m[1];
         }
         
-        // Fallback: try to extract from span with _ap3a class
+        // Fallback: try to extract from span with _ap3a classnom,
         if(!username){
           const nameSpan = item.querySelector('span._ap3a');
           if(nameSpan) {
@@ -597,7 +597,7 @@ async def perform_mass_follow_stream(
         const a = item.querySelector('a[href^="/"][href$="/"]');
         if(a){
           const href = a.getAttribute('href')||'';
-          const m = href.match(/^\/([^\/]+)\/$/);
+          const m = href.match(/^\/([^/]+)\/$/);
           if(m) username = m[1];
         }
         
@@ -800,7 +800,7 @@ async def perform_mass_follow_stream(
             const a = container.querySelector('a[href^="/"][href$="/"]');
             if(a) {
               const href = a.getAttribute('href') || '';
-              const m = href.match(/^\/([^\/]+)\/$/);
+              const m = href.match(/^\/([^/]+)\/$/);
               if(m) username = m[1];
             }
           }
