@@ -31,3 +31,19 @@ export const getLoginState = async (profile_id: number | string): Promise<{ stat
   const response = (await api.get(`/engine/login-state`, { params: { profile_id } })).data;
   return { state: response.login?.state || "unknown" };
 };
+
+// Warmup stream for a profile (SSE via token in query)
+export const startWarmupStream = (profile_id: number | string, content: "home"|"reels" = "reels", durationSec = 0, maxLikes = -1): EventSource => {
+  const base = api.defaults.baseURL || "";
+  const token = localStorage.getItem("jwt") || "";
+  const qs = new URLSearchParams({
+    account_id: String(0),
+    profile_id: String(profile_id),
+    duration_sec: String(durationSec),
+    max_likes: String(maxLikes),
+    content,
+    token,
+  }).toString();
+  const url = `${base}/actions/warmup-stream-open?${qs}`;
+  return new EventSource(url);
+};

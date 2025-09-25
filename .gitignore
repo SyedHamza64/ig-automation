@@ -1,0 +1,28 @@
+﻿# Node / frontend
+node_modules/
+**/node_modules/
+
+# Venv / Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Local env / secrets
+.env
+.env.local
+
+# Chrome / Selenium profile caches (don't commit browser caches)
+**/selenium_profiles/
+**/Default/Cache/
+**/Cache_Data/
+profiles/
+
+# Big local folders / experimental builds
+bulkcreate-main/
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -14,6 +14,8 @@ from ..models.account import Account
 from ..models.profile import Profile
 from .auth import require_admin
 from ..services.actions import get_account_limits, run_action
+from fastapi.responses import StreamingResponse
+import json
 
 
 router = APIRouter(prefix="/actions", tags=["actions"])
@@ -133,3 +135,199 @@ def list_logs(limit: int = 10, db: Session = Depends(get_db)):
         }
         for log in q
     ]
+
+
+# -------------------- Streaming mass follow/unfollow (SSE) --------------------
+from ..services.actions import ensure_profile_ws, perform_mass_follow_stream
+from ..services.warmup import perform_warmup_stream
+import random
+from ..core.security import decode_token
+from ..models.user import User
+import logging
+log = logging.getLogger("app.api.actions.mass_stream")
+
+
+@router.get("/mass-follow-stream")
+async def mass_follow_stream(
+    account_id: int,
+    profile_id: int,
+    username: str,
+    mode: str = "follow",  # or "unfollow"
+    limit: int = 50,
+    percent: int | None = None,
+    max_scrolls: int = 200,
+    section: str = "followers",  # or "following"
+    debug_dom: bool = False,
+    db: Session = Depends(get_db),
+    _=Depends(require_admin)
+):
+    try:
+        ws_url = ensure_profile_ws(db, profile_id)
+    except Exception as e:
+        log.exception("ensure_profile_ws failed")
+        async def error_gen():
+            yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    async def event_generator():
+        try:
+            start = {"type":"start","account_id":account_id,"profile_id":profile_id,"username":username,"mode":mode}
+            log.info("mass-stream start %s", start)
+            yield f"data: {json.dumps(start)}\n\n"
+            async for ev in perform_mass_follow_stream(ws_url, username, mode, limit=limit, percent=percent, max_scrolls=max_scrolls, section=section, debug_dom=debug_dom):
+                log.debug("mass-stream ev %s", ev)
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as e:
+            log.exception("mass-stream crashed")
+            yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+        finally:
+            yield f"data: {json.dumps({'type':'done','reason':'closed'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# Alternate SSE endpoint that accepts a JWT via query param (for EventSource)
+@router.get("/mass-follow-stream-open")
+async def mass_follow_stream_open(
+    account_id: int,
+    profile_id: int,
+    username: str,
+    mode: str = "follow",
+    limit: int = 50,
+    percent: int | None = None,
+    max_scrolls: int = 200,
+    section: str = "followers",
+    debug_dom: bool = False,
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    # Manual auth because EventSource cannot send headers
+    if not token:
+        async def _err_missing():
+            yield f"data: {json.dumps({'type':'error','message':'missing token'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(_err_missing(), media_type="text/event-stream")
+    try:
+        payload = decode_token(token)
+        if not payload or "sub" not in payload:
+            raise ValueError("invalid token")
+        user = db.get(User, int(payload["sub"]))
+        if not user or not user.is_admin:
+            raise ValueError("unauthorized")
+    except Exception as _:
+        async def _err_unauth():
+            yield f"data: {json.dumps({'type':'error','message':'unauthorized'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(_err_unauth(), media_type="text/event-stream")
+
+    try:
+        ws_url = ensure_profile_ws(db, profile_id)
+    except Exception as e:
+        log.exception("ensure_profile_ws failed")
+        async def error_gen():
+            yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    async def event_generator():
+        try:
+            start = {"type":"start","account_id":account_id,"profile_id":profile_id,"username":username,"mode":mode}
+            log.info("mass-stream-open start %s", start)
+            yield f"data: {json.dumps(start)}\n\n"
+            async for ev in perform_mass_follow_stream(ws_url, username, mode, limit=limit, percent=percent, max_scrolls=max_scrolls, section=section, debug_dom=debug_dom):
+                log.debug("mass-stream-open ev %s", ev)
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as e:
+            log.exception("mass-stream-open crashed")
+            yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+        finally:
+            yield f"data: {json.dumps({'type':'done','reason':'closed'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# -------------------- Warmup SSE --------------------
+@router.get("/warmup-stream")
+async def warmup_stream(
+    account_id: int,
+    profile_id: int,
+    duration_sec: int = 75,
+    max_likes: int = -1,
+    content: str = "home",
+    db: Session = Depends(get_db),
+    _=Depends(require_admin),
+):
+    try:
+        ws_url = ensure_profile_ws(db, profile_id)
+    except Exception as e:
+        async def error_gen():
+            yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    # Resolve randomized duration if requested (<= 0 means pick 60-90s)
+    resolved_duration = duration_sec if duration_sec and duration_sec > 0 else random.randint(60, 90)
+
+    async def event_generator():
+        try:
+            async for ev in perform_warmup_stream(ws_url, duration_sec=resolved_duration, max_likes=max_likes, content=content):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+        finally:
+            yield f"data: {json.dumps({'type':'done','reason':'closed'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# Alternate warmup SSE endpoint that accepts JWT via query param (for EventSource)
+@router.get("/warmup-stream-open")
+async def warmup_stream_open(
+    account_id: int,
+    profile_id: int,
+    duration_sec: int = 75,
+    max_likes: int = -1,
+    content: str = "home",
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    # Manual auth
+    if not token:
+        async def _err_missing():
+            yield f"data: {json.dumps({'type':'error','message':'missing token'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(_err_missing(), media_type="text/event-stream")
+    try:
+        payload = decode_token(token)
+        if not payload or "sub" not in payload:
+            raise ValueError("invalid token")
+        user = db.get(User, int(payload["sub"]))
+        if not user or not user.is_admin:
+            raise ValueError("unauthorized")
+    except Exception:
+        async def _err_unauth():
+            yield f"data: {json.dumps({'type':'error','message':'unauthorized'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(_err_unauth(), media_type="text/event-stream")
+
+    # resolve WS and duration
+    try:
+        ws_url = ensure_profile_ws(db, profile_id)
+    except Exception as e:
+        async def error_gen():
+            yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    resolved_duration = duration_sec if duration_sec and duration_sec > 0 else random.randint(60, 90)
+
+    async def event_generator():
+        try:
+            async for ev in perform_warmup_stream(ws_url, duration_sec=resolved_duration, max_likes=max_likes, content=content):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+        finally:
+            yield f"data: {json.dumps({'type':'done','reason':'closed'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

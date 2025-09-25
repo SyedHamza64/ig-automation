@@ -32,3 +32,28 @@ export const getRecentLogs = async (limit = 50) => {
   const response = await api.get("/logs", { params: { limit } });
   return response.data;
 };
+
+// Start mass follow stream (SSE) with section filter (followers | following)
+export type MassFollowParams = {
+  account_id: number;
+  profile_id: number;
+  username: string;
+  limit?: number;
+  section?: "followers" | "following";
+};
+
+export const startMassFollowStream = ({ account_id, profile_id, username, limit = 10, section = "followers" }: MassFollowParams): EventSource => {
+  const base = api.defaults.baseURL || "";
+  const token = localStorage.getItem("jwt") || "";
+  const qs = new URLSearchParams({
+    account_id: String(account_id),
+    profile_id: String(profile_id),
+    username,
+    mode: "follow",
+    limit: String(limit),
+    section,
+    token,
+  }).toString();
+  const url = `${base}/actions/mass-follow-stream-open?${qs}`;
+  return new EventSource(url);
+};

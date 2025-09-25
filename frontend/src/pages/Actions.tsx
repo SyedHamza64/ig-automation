@@ -8,6 +8,7 @@ import {
   unfollowAction, 
   likeRecentAction, 
   getRecentLogs,
+  startMassFollowStream,
   type ActionRequest 
 } from "../api/actions";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
@@ -21,6 +22,11 @@ export default function ActionsPage() {
   const [actionType, setActionType] = useState<ActionType>("follow");
   const [usernames, setUsernames] = useState<string>("");
   const [count, setCount] = useState<number>(2);
+  const [followSection, setFollowSection] = useState<"followers" | "following">("followers");
+  const [followLimit, setFollowLimit] = useState<number>(10);
+  const [useMassFollow, setUseMassFollow] = useState<boolean>(true);
+  const [streaming, setStreaming] = useState<boolean>(false);
+  const [progress, setProgress] = useState<{acted:number; processed:number; total:number|null}>({acted:0, processed:0, total:0});
   
   const queryClient = useQueryClient();
 
@@ -103,7 +109,51 @@ export default function ActionsPage() {
       payload.count = count;
       likeRecentMutation.mutate(payload);
     } else if (actionType === "follow") {
-      followMutation.mutate(payload);
+      if (!useMassFollow) {
+        // Fallback to existing queued follow API
+        followMutation.mutate(payload);
+      } else {
+        // Use streaming mass-follow with section filter
+        const username = usernameList[0];
+        if (!username) {
+          toast("Enter a single username for mass follow stream", "error");
+          return;
+        }
+        setStreaming(true);
+        setProgress({acted:0, processed:0, total:0});
+        const es = startMassFollowStream({
+          account_id: selectedAccount.id,
+          profile_id: selectedAccount.profile_id,
+          username,
+          limit: followLimit,
+          section: followSection,
+        });
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data?.type === "start") {
+              toast(`Started mass follow on @${username} (${followSection})`, "success");
+            }
+            if (data?.type === "progress") {
+              setProgress({ acted: data.acted ?? 0, processed: data.processed ?? 0, total: data.total ?? null });
+            }
+            if (data?.type === "done") {
+              toast(`Mass follow finished: ${data.reason}`, "success");
+              es.close();
+              setStreaming(false);
+              queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
+            }
+            if (data?.type === "error") {
+              toast(`Error: ${data.message}`, "error");
+            }
+          } catch {}
+        };
+        es.onerror = () => {
+          toast("Stream error", "error");
+          es.close();
+          setStreaming(false);
+        };
+      }
     } else if (actionType === "unfollow") {
       unfollowMutation.mutate(payload);
     }
@@ -181,6 +231,38 @@ export default function ActionsPage() {
             </p>
           </div>
 
+          {/* Follow options (only for follow) */}
+          {actionType === "follow" && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Follow From</label>
+                <select
+                  value={followSection}
+                  onChange={(e) => setFollowSection(e.target.value as any)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="followers">Followers of username</option>
+                  <option value="following">Following of username</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Follow Limit</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={followLimit}
+                  onChange={(e) => setFollowLimit(Number(e.target.value))}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div className="md:col-span-2 flex items-center gap-3">
+                <input id="toggleMassFollow" type="checkbox" checked={useMassFollow} onChange={(e)=>setUseMassFollow(e.target.checked)} />
+                <label htmlFor="toggleMassFollow" className="text-sm text-gray-700">Use mass-follow stream (safer scrolling + delays)</label>
+              </div>
+            </div>
+          )}
+
           {/* Count Input (for like-recent) */}
           {actionType === "like-recent" && (
             <div>
@@ -202,20 +284,20 @@ export default function ActionsPage() {
           <div>
             <button
               onClick={handleSubmit}
-              disabled={isLoading || !selectedAccount || !selectedAccount.profile_id}
+              disabled={isLoading || streaming || !selectedAccount || !selectedAccount.profile_id}
               className={`px-4 py-2 rounded-md text-sm font-medium ${
-                isLoading || !selectedAccount || !selectedAccount.profile_id
+                isLoading || streaming || !selectedAccount || !selectedAccount.profile_id
                   ? "bg-gray-300 text-gray-500 cursor-not-allowed"
                   : "bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
               }`}
             >
-              {isLoading ? (
+              {isLoading || streaming ? (
                 <span className="flex items-center">
                   <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  Running...
+                  {`Running... ${progress.acted}/${followLimit}${progress.total ? ` (seen ${progress.processed}/${progress.total})` : ""}`}
                 </span>
               ) : (
                 `Run ${actionType.replace("-", " ")}`

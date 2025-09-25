@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { listProfiles, openProfile, closeProfile, wsCheck, probeProfile, getLoginState, type ProfileRow } from "../api/profiles";
+import { listProfiles, openProfile, closeProfile, wsCheck, probeProfile, getLoginState, startWarmupStream, type ProfileRow } from "../api/profiles";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Table, TBody, TH, TD } from "../components/ui/Table";
 
@@ -237,6 +237,9 @@ function LoginBadge({ id, onError }: { id: number, onError?: (id: number, error:
 
 function ProfileRowItem({ row, onError }: { row: ProfileRow, onError?: (id: number, error: string) => void }) {
   const [open, setOpen] = useState(false);
+  const [warming, setWarming] = useState(false);
+  const [warmSecs, setWarmSecs] = useState<number>(0);
+  const [warmTotal, setWarmTotal] = useState<number | null>(null);
   const qc = useQueryClient();
   
   const mOpen = useMutation({
@@ -335,6 +338,41 @@ function ProfileRowItem({ row, onError }: { row: ProfileRow, onError?: (id: numb
               className="rounded-md border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50"
             >
               {mProbe.isPending ? "Probing…" : "Probe"}
+            </button>
+            <button
+              onClick={() => {
+                if (warming) return;
+                setWarming(true);
+                setWarmSecs(0);
+                setWarmTotal(null);
+                const es = startWarmupStream(row.id, "reels", 0, -1);
+                const startedAt = Date.now();
+                const t = window.setInterval(() => setWarmSecs(Math.floor((Date.now()-startedAt)/1000)), 1000);
+                es.onmessage = (e) => {
+                  try {
+                    const data = JSON.parse(e.data);
+                    if (data?.type === "start") {
+                      // duration_sec is in start event
+                      if (typeof data.duration_sec === 'number') setWarmTotal(data.duration_sec);
+                    }
+                    if (data?.type === "done") {
+                      es.close();
+                      window.clearInterval(t);
+                      setWarming(false);
+                      qc.invalidateQueries({ queryKey: ["profiles"] });
+                    }
+                  } catch {}
+                };
+                es.onerror = () => {
+                  es.close();
+                  window.clearInterval(t);
+                  setWarming(false);
+                };
+              }}
+              disabled={warming}
+              className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-50 ${warming ? "border-gray-300" : "border-gray-300 hover:bg-gray-50"}`}
+            >
+              {warming ? `Warming… ${warmSecs}${warmTotal?`/${warmTotal}`:""}s` : "Warmup"}
             </button>
           </div>
         </div>
