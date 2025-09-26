@@ -1,0 +1,180 @@
+================================================================================
+                    WEBPROXY BROWSER PROFILE MANAGER
+                         SETUP INSTRUCTIONS
+================================================================================
+
+🚀 QUICK START GUIDE - Follow these steps exactly:
+
+================================================================================
+STEP 1: PREREQUISITES
+================================================================================
+
+Before starting, make sure you have:
+✓ Node.js (v16+) - Download from: https://nodejs.org
+✓ Python (v3.7+) - Download from: https://python.org  
+✓ Chrome Browser installed
+
+================================================================================
+STEP 2: INSTALL PYTHON DEPENDENCIES
+================================================================================
+
+Open Command Prompt/Terminal and run:
+
+pip install undetected-chromedriver selenium
+
+================================================================================
+STEP 3: SETUP BACKEND SERVER
+================================================================================
+
+1. Navigate to server folder:
+   cd server
+
+2. Install dependencies:
+   npm install
+
+================================================================================
+STEP 4: SETUP FRONTEND CLIENT
+================================================================================
+
+1. Navigate to client folder:
+   cd client
+
+2. Install dependencies:
+   npm install
+
+================================================================================
+STEP 5: CONFIGURE CHROMEDRIVER PATH
+================================================================================
+
+IMPORTANT: Edit the manager.py file
+
+1. Open manager.py in any text editor
+2. Find line 12 (CHROMEDRIVER_PATH)
+3. Change it to your actual path:
+
+   CHROMEDRIVER_PATH = "C:/your/actual/path/to/webProxy/chromedriver.exe"
+
+   Example:
+   CHROMEDRIVER_PATH = "C:/Users/John/Desktop/webProxy/chromedriver.exe"
+
+================================================================================
+STEP 6: START THE APPLICATION
+================================================================================
+
+You need TWO terminal windows open:
+
+TERMINAL 1 - Backend Server:
+1. cd server
+2. npm run dev
+   → Server will start on http://localhost:4000
+
+TERMINAL 2 - Frontend Client:
+1. cd client  
+2. npm run dev
+   → Client will start on http://localhost:5173
+
+================================================================================
+STEP 7: ACCESS THE APPLICATION
+================================================================================
+
+Open your browser and go to: http://localhost:5173
+
+You should see the WebProxy dashboard!
+
+================================================================================
+HOW TO USE THE APPLICATION
+================================================================================
+
+CREATING A PROFILE:
+1. Click "Create Profile" button
+2. Enter a name for your profile
+3. (Optional) Add proxy: http://username:password@host:port
+4. Click "Create"
+
+LAUNCHING A PROFILE:
+1. Find your profile in the list
+2. Click "Launch" button
+3. A new Chrome window will open with that profile
+
+CLOSING A PROFILE:
+1. Click "Close" button next to running profile
+2. The browser window will close
+
+MANAGING PROFILES:
+- Click the menu (⋮) next to any profile
+- Choose "View Details" to see configuration
+- Choose "Delete" to remove the profile
+
+================================================================================
+PROXY CONFIGURATION EXAMPLES
+================================================================================
+
+HTTP Proxy:
+http://proxy.example.com:8080
+
+HTTP Proxy with Authentication:
+http://username:password@proxy.example.com:8080
+
+SOCKS5 Proxy:
+socks5://proxy.example.com:1080
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+PROBLEM: Profiles won't launch
+SOLUTION: 
+- Check the ChromeDriver path in manager.py
+- Make sure Chrome browser is installed
+- Verify Python packages are installed
+
+PROBLEM: "Connection refused" errors
+SOLUTION:
+- Make sure both servers are running
+- Check if ports 4000 and 5173 are free
+- Restart both servers
+
+PROBLEM: Proxy not working
+SOLUTION:
+- Verify proxy format is correct
+- Test proxy connection separately
+- Check proxy server is online
+
+================================================================================
+IMPORTANT NOTES
+================================================================================
+
+✓ Keep both terminal windows open while using the application
+✓ Each profile creates separate browsing data
+✓ Profiles are saved and persist between restarts
+✓ Close profiles properly to free up system resources
+✓ Check browser console (F12) for detailed error messages
+
+================================================================================
+FILE STRUCTURE
+================================================================================
+
+webProxy/
+├── client/              (React frontend)
+├── server/              (Node.js backend)  
+├── selenium_profiles/   (Profile data storage)
+├── manager.py          (Python automation)
+├── chromedriver.exe    (Chrome driver)
+└── README.md           (Detailed documentation)
+
+================================================================================
+SUPPORT
+================================================================================
+
+If you encounter issues:
+1. Check this troubleshooting section
+2. Look at browser console for errors (Press F12)
+3. Verify all installation steps were completed
+4. Make sure all prerequisites are installed
+
+================================================================================
+                           SETUP COMPLETE!
+================================================================================
+
+Your WebProxy Browser Profile Manager is now ready to use!
+Access it at: http://localhost:5173

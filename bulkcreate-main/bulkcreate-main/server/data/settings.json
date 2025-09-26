@@ -1,0 +1,11 @@
+{
+  "notifications": true,
+  "autoStart": false,
+  "darkMode": true,
+  "language": "en",
+  "defaultProxy": "",
+  "maxProfiles": 50,
+  "sessionTimeout": 30,
+  "autoBackup": true,
+  "backupInterval": 24
+}

@@ -19,7 +19,6 @@ __pycache__/
 profiles/
 
 # Big local folders / experimental builds
-bulkcreate-main/
 dist/
 build/
 
