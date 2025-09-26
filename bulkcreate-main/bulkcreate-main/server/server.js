@@ -76,6 +76,7 @@ app.use(express.json());
 
 // API to get the list of profiles
 app.get('/api/profiles', (req, res) => {
+    console.log('=== API /api/profiles called - UPDATED CODE ===');
     const pythonProcess = spawn('python', ['manager.py', 'list'], {
         cwd: path.join(__dirname, '..')
     });
@@ -93,23 +94,61 @@ app.get('/api/profiles', (req, res) => {
             // Add enhanced mode information to each profile
             const profilesWithEnhanced = {};
             for (const [name, config] of Object.entries(profiles)) {
-                // Check if profile has enhanced mode flag
+                // Check if profile has enhanced mode flag and anti-detection features
                 const enhancedModePath = path.join(__dirname, '../selenium_profiles', name, 'enhanced_mode.json');
                 let enhancedMode = false;
+                let antiDetection = {};
+                
+                // Debug: Log every profile being processed
+                console.log(`Processing profile: ${name}`);
                 
                 try {
                     if (fs.existsSync(enhancedModePath)) {
                         const metadata = JSON.parse(fs.readFileSync(enhancedModePath, 'utf8'));
                         enhancedMode = metadata.enhancedMode || false;
+                        antiDetection = metadata.anti_detection || {};
+                        
+                        // Debug logging for all profiles
+                        if (name === 'test_features_profile') {
+                            console.log(`DEBUG - Reading enhanced_mode.json for ${name}:`, {
+                                enhancedModePath,
+                                metadata,
+                                enhancedMode,
+                                antiDetection
+                            });
+                        }
+                    } else {
+                        // Debug logging for missing files
+                        if (name === 'test_features_profile') {
+                            console.log(`DEBUG - Enhanced mode file not found for ${name}:`, enhancedModePath);
+                        }
                     }
                 } catch (error) {
                     console.warn(`Could not read enhanced mode for ${name}:`, error.message);
+                    if (name === 'test_features_profile') {
+                        console.log(`DEBUG - Error reading enhanced_mode.json for ${name}:`, error);
+                    }
                 }
                 
                 profilesWithEnhanced[name] = {
                     ...config,
-                    enhancedMode: enhancedMode
+                    enhancedMode: enhancedMode,
+                    anti_detection: antiDetection
                 };
+                
+                // Debug: Log the final profile data
+                if (name === 'test_features_profile') {
+                    console.log(`FINAL PROFILE DATA for ${name}:`, profilesWithEnhanced[name]);
+                }
+                
+                // Debug logging for test profile
+                if (name === 'test_features_profile') {
+                    console.log(`DEBUG - Profile ${name}:`, {
+                        enhancedMode,
+                        anti_detection: antiDetection,
+                        enhancedModePath
+                    });
+                }
             }
             
             console.log(`Returning ${Object.keys(profilesWithEnhanced).length} profiles to UI`);
@@ -123,11 +162,18 @@ app.get('/api/profiles', (req, res) => {
 
 // API to create a new profile
 app.post('/api/profiles', (req, res) => {
-    const { name, config, enhancedMode = false } = req.body;
+    const { name, config, enhancedMode = false, antiDetection = {} } = req.body;
+    
+    console.log('Create profile request:', { name, enhancedMode, antiDetection });
     
     // If enhanced mode is enabled, use our enhanced creation method
     if (enhancedMode) {
-        return createEnhancedProfile(name, config, res);
+        // Add anti-detection config to the profile config
+        const enhancedConfig = {
+            ...config,
+            anti_detection: antiDetection
+        };
+        return createEnhancedProfile(name, enhancedConfig, res);
     }
     
     // Default bulkcreate-main method (standard mode)
@@ -179,16 +225,21 @@ function createEnhancedProfile(name, config, res) {
     const path = require('path');
     const enhancedScript = path.join(__dirname, '../bulkcreate_enhanced_test.py');
     
-    // Create a temporary config for the enhanced script
+    // Create a temporary config for the enhanced script with anti-detection features
     const enhancedConfig = {
         ...config,
         enhanced_mode: true,  // This tells the script it's an enhanced mode profile
-        profile_name: name
+        profile_name: name,
+        anti_detection: config.anti_detection || {}  // Include anti-detection configuration
     };
+    
+    console.log(`Creating enhanced profile '${name}' with anti-detection config:`, enhancedConfig.anti_detection);
     
     const args = ['python', enhancedScript, '--create-only', '--name', name, '--config', JSON.stringify(enhancedConfig)];
     
-    const pythonProcess = spawn(args[0], args.slice(1));
+    const pythonProcess = spawn(args[0], args.slice(1), {
+        cwd: path.join(__dirname, '..')
+    });
     
     let errorOutput = '';
     pythonProcess.stderr.on('data', (data) => {
@@ -257,7 +308,7 @@ function findNextAvailableNumbers(prefix, suffix, count) {
 }
 
 // Enhanced bulk profile creation function (sequential like standard bulk creation)
-function createBulkEnhancedProfiles(count, deviceType, prefix, res) {
+function createBulkEnhancedProfiles(count, deviceType, prefix, antiDetectionConfig, res) {
     const path = require('path');
     const enhancedScript = path.join(__dirname, '../bulkcreate_enhanced_test.py');
     
@@ -292,7 +343,7 @@ function createBulkEnhancedProfiles(count, deviceType, prefix, res) {
         const profileNumber = availableNumbers[currentIndex - 1];
         const profileName = prefix ? `${prefix}_enh_${profileNumber}` : `enhanced_profile_${profileNumber}`;
         
-        // Create a config for each profile
+        // Create a config for each profile with anti-detection settings
         const enhancedConfig = {
             enhanced_mode: true,
             profile_name: profileName,
@@ -302,7 +353,9 @@ function createBulkEnhancedProfiles(count, deviceType, prefix, res) {
             webrtc: "disabled",
             window_size: [1920, 1080],
             startup_urls: ["https://httpbin.org/ip"],
-            remark: `Enhanced profile ${currentIndex} created via bulk operation`
+            remark: `Enhanced profile ${currentIndex} created via bulk operation`,
+            deviceType: deviceType,
+            anti_detection: antiDetectionConfig || {}  // Include anti-detection configuration
         };
         
         // Add device type specific settings (same as standard bulk creation)
@@ -480,11 +533,13 @@ app.post('/api/profiles/delete', (req, res) => {
 
 // API for bulk profile creation
 app.post('/api/profiles/bulk-create', (req, res) => {
-    const { count, deviceType, prefix, enhancedMode = false } = req.body;
+    const { count, deviceType, prefix, enhancedMode = false, antiDetection = {} } = req.body;
+    
+    console.log('Bulk create request:', { count, deviceType, prefix, enhancedMode, antiDetection });
     
     // If enhanced mode is enabled, use our enhanced bulk creation method
     if (enhancedMode) {
-        return createBulkEnhancedProfiles(count, deviceType, prefix, res);
+        return createBulkEnhancedProfiles(count, deviceType, prefix, antiDetection, res);
     }
     
     // Default bulkcreate-main method (standard mode)

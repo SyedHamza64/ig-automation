@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Globe, Monitor, Clock, Shield, Link } from 'lucide-react';
+import { X, Globe, Monitor, Clock, Shield, Link, Zap, Check, XCircle } from 'lucide-react';
 
 const ProfileDetailsModal = ({ isOpen, onClose, profile, profileName }) => {
   if (!isOpen || !profile) return null;
@@ -41,6 +41,22 @@ const ProfileDetailsModal = ({ isOpen, onClose, profile, profileName }) => {
       'Australia/Sydney': 'Sydney'
     };
     return timezones[timezone] || timezone;
+  };
+
+  // Check if profile is enhanced and get anti-detection features
+  const isEnhancedProfile = profile.enhancedMode || profile.enhanced_mode;
+  const antiDetectionFeatures = profile.anti_detection || {};
+  
+  const getFeatureStatus = (featureName) => {
+    return antiDetectionFeatures[featureName] || false;
+  };
+
+  const featureLabels = {
+    dynamic_user_agent: 'Dynamic User Agent Generation',
+    enhanced_canvas_fingerprinting: 'Enhanced Canvas Fingerprinting',
+    realistic_device_metrics: 'Realistic Device Metrics',
+    hardware_randomization: 'Hardware Randomization',
+    advanced_navigator_properties: 'Advanced Navigator Properties'
   };
 
   return (
@@ -129,6 +145,90 @@ const ProfileDetailsModal = ({ isOpen, onClose, profile, profileName }) => {
                 <label className="block text-sm font-medium text-gray-400 mb-1">WebRTC</label>
                 <p className="text-gray-200 capitalize">{profile.webrtc || 'disabled'}</p>
               </div>
+            </div>
+          </div>
+
+          {/* Enhanced Anti-Detection Features */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-gray-300 flex items-center">
+              <Zap className="mr-2" size={20} />
+              Enhanced Anti-Detection Features
+            </h3>
+            <div className="bg-[#2d3035] p-4 rounded-lg">
+              <div className="mb-4">
+                <div className="flex items-center space-x-3 mb-2">
+                  <span className="text-sm font-medium text-gray-400">Profile Type:</span>
+                  <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                    isEnhancedProfile 
+                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
+                      : 'bg-gray-500/20 text-gray-400 border border-gray-500/30'
+                  }`}>
+                    {isEnhancedProfile ? 'Enhanced Profile' : 'Standard Profile'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500">
+                  {isEnhancedProfile 
+                    ? 'This profile uses advanced anti-detection measures' 
+                    : 'This profile uses standard browser settings'
+                  }
+                </p>
+              </div>
+              
+              {isEnhancedProfile && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-gray-300 mb-3">Enabled Features:</h4>
+                  <div className="grid grid-cols-1 gap-3">
+                    {Object.entries(featureLabels).map(([featureKey, featureLabel]) => {
+                      const isEnabled = getFeatureStatus(featureKey);
+                      return (
+                        <div key={featureKey} className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg border border-gray-600">
+                          <div className="flex items-center space-x-3">
+                            {isEnabled ? (
+                              <Check className="text-green-400" size={16} />
+                            ) : (
+                              <XCircle className="text-gray-500" size={16} />
+                            )}
+                            <span className="text-sm text-gray-300">{featureLabel}</span>
+                          </div>
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            isEnabled 
+                              ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+                              : 'bg-gray-500/20 text-gray-500 border border-gray-500/30'
+                          }`}>
+                            {isEnabled ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  {/* Summary */}
+                  <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                    <div className="flex items-center space-x-2 mb-2">
+                      <Zap className="text-blue-400" size={16} />
+                      <span className="text-sm font-medium text-blue-400">Feature Summary</span>
+                    </div>
+                    <p className="text-xs text-blue-300">
+                      {Object.values(featureLabels).filter((_, index) => 
+                        getFeatureStatus(Object.keys(featureLabels)[index])
+                      ).length} of {Object.keys(featureLabels).length} advanced features are enabled
+                    </p>
+                  </div>
+                </div>
+              )}
+              
+              {!isEnhancedProfile && (
+                <div className="p-4 bg-gray-700/30 rounded-lg border border-gray-600">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Clock className="text-gray-400" size={16} />
+                    <span className="text-sm font-medium text-gray-400">Standard Mode</span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    This profile uses basic browser settings without advanced anti-detection features.
+                    To enable advanced features, create a new profile with Enhanced Mode enabled.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Enhanced backend script that combines bulkcreate-main manager.py with 
-launch_single_profile.py anti-detection measures to avoid CAPTCHA issues.
+advanced anti-detection measures and configurable feature toggles.
 """
 
 import os
@@ -13,6 +13,7 @@ import random
 import logging
 import threading
 import argparse
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from selenium import webdriver
@@ -30,6 +31,272 @@ parser.add_argument('--launch-only', action='store_true', help='Only launch prof
 parser.add_argument('--name', type=str, help='Profile name to create/launch')
 parser.add_argument('--config', type=str, help='Profile configuration JSON')
 args = parser.parse_args()
+
+# Phase 1 Anti-Detection Features Configuration
+class AntiDetectionFeatures:
+    """Configuration class for all anti-detection features"""
+    
+    def __init__(self, config_dict=None):
+        # Default toggles - all disabled by default (current behavior)
+        self.dynamic_user_agent = False
+        self.enhanced_canvas_fingerprinting = False
+        self.realistic_device_metrics = False
+        self.hardware_randomization = False
+        self.advanced_navigator_properties = False
+        
+        # Load from config if provided
+        if config_dict:
+            self.load_from_config(config_dict)
+    
+    def load_from_config(self, config_dict):
+        """Load feature toggles from configuration"""
+        anti_detection_config = config_dict.get('anti_detection', {})
+        
+        self.dynamic_user_agent = anti_detection_config.get('dynamic_user_agent', False)
+        self.enhanced_canvas_fingerprinting = anti_detection_config.get('enhanced_canvas_fingerprinting', False)
+        self.realistic_device_metrics = anti_detection_config.get('realistic_device_metrics', False)
+        self.hardware_randomization = anti_detection_config.get('hardware_randomization', False)
+        self.advanced_navigator_properties = anti_detection_config.get('advanced_navigator_properties', False)
+    
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        return {
+            'dynamic_user_agent': self.dynamic_user_agent,
+            'enhanced_canvas_fingerprinting': self.enhanced_canvas_fingerprinting,
+            'realistic_device_metrics': self.realistic_device_metrics,
+            'hardware_randomization': self.hardware_randomization,
+            'advanced_navigator_properties': self.advanced_navigator_properties
+        }
+
+# User Agent Generator
+class UserAgentGenerator:
+    """Generate realistic user agents based on device type and settings"""
+    
+    CHROME_VERSIONS = [
+        "126.0.0.0", "125.0.0.0", "124.0.0.0", "123.0.0.0", "122.0.0.0"
+    ]
+    
+    FIREFOX_VERSIONS = [
+        "126.0", "125.0", "124.0", "123.0", "122.0"
+    ]
+    
+    SAFARI_VERSIONS = [
+        "17.0", "16.6", "16.5", "16.4", "16.3"
+    ]
+    
+    @staticmethod
+    def generate_chrome_windows(seed=None):
+        """Generate Chrome Windows user agent"""
+        if seed:
+            random.seed(seed)
+        
+        version = random.choice(UserAgentGenerator.CHROME_VERSIONS)
+        webkit_version = f"{int(version.split('.')[0]) + 100}.0.0.0"
+        
+        return f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/{webkit_version} (KHTML, like Gecko) Chrome/{version} Safari/{webkit_version.split('.')[0]}"
+    
+    @staticmethod
+    def generate_chrome_macos(seed=None):
+        """Generate Chrome macOS user agent"""
+        if seed:
+            random.seed(seed)
+        
+        version = random.choice(UserAgentGenerator.CHROME_VERSIONS)
+        webkit_version = f"{int(version.split('.')[0]) + 100}.0.0.0"
+        mac_version = random.choice(["14.0", "13.0", "12.0"])
+        
+        return f"Mozilla/5.0 (Macintosh; Intel Mac OS X {mac_version.replace('.', '_')}) AppleWebKit/{webkit_version} (KHTML, like Gecko) Chrome/{version} Safari/{webkit_version.split('.')[0]}"
+    
+    @staticmethod
+    def generate_chrome_linux(seed=None):
+        """Generate Chrome Linux user agent"""
+        if seed:
+            random.seed(seed)
+        
+        version = random.choice(UserAgentGenerator.CHROME_VERSIONS)
+        webkit_version = f"{int(version.split('.')[0]) + 100}.0.0.0"
+        
+        return f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/{webkit_version} (KHTML, like Gecko) Chrome/{version} Safari/{webkit_version.split('.')[0]}"
+    
+    @staticmethod
+    def generate_firefox_windows(seed=None):
+        """Generate Firefox Windows user agent"""
+        if seed:
+            random.seed(seed)
+        
+        version = random.choice(UserAgentGenerator.FIREFOX_VERSIONS)
+        return f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{version}) Gecko/20100101 Firefox/{version}"
+    
+    @staticmethod
+    def generate_safari_macos(seed=None):
+        """Generate Safari macOS user agent"""
+        if seed:
+            random.seed(seed)
+        
+        version = random.choice(UserAgentGenerator.SAFARI_VERSIONS)
+        mac_version = random.choice(["14.0", "13.0", "12.0"])
+        
+        return f"Mozilla/5.0 (Macintosh; Intel Mac OS X {mac_version.replace('.', '_')}) AppleWebKit/{version} (KHTML, like Gecko) Version/{version} Safari/{version}"
+
+# Device Metrics Generator
+class DeviceMetricsGenerator:
+    """Generate realistic device metrics and hardware specifications"""
+    
+    DESKTOP_RESOLUTIONS = [
+        {"width": 1920, "height": 1080, "scale": 1.0},
+        {"width": 2560, "height": 1440, "scale": 1.0},
+        {"width": 3840, "height": 2160, "scale": 1.0},
+        {"width": 1366, "height": 768, "scale": 1.0},
+        {"width": 1536, "height": 864, "scale": 1.0},
+        {"width": 1440, "height": 900, "scale": 1.0},
+        {"width": 1680, "height": 1050, "scale": 1.0},
+        {"width": 1280, "height": 720, "scale": 1.0}
+    ]
+    
+    LAPTOP_RESOLUTIONS = [
+        {"width": 1366, "height": 768, "scale": 1.0},
+        {"width": 1920, "height": 1080, "scale": 1.0},
+        {"width": 2560, "height": 1440, "scale": 1.25},
+        {"width": 2880, "height": 1800, "scale": 1.5},
+        {"width": 1440, "height": 900, "scale": 1.0},
+        {"width": 1680, "height": 1050, "scale": 1.0}
+    ]
+    
+    MOBILE_RESOLUTIONS = [
+        {"width": 375, "height": 667, "scale": 2.0},
+        {"width": 414, "height": 896, "scale": 2.0},
+        {"width": 375, "height": 812, "scale": 3.0},
+        {"width": 414, "height": 736, "scale": 2.0},
+        {"width": 360, "height": 640, "scale": 2.0},
+        {"width": 393, "height": 851, "scale": 2.75}
+    ]
+    
+    HARDWARE_CONFIGS = {
+        "desktop": [
+            {"cores": 8, "memory": 16, "platform": "Win32"},
+            {"cores": 12, "memory": 32, "platform": "Win32"},
+            {"cores": 16, "memory": 64, "platform": "Win32"},
+            {"cores": 6, "memory": 8, "platform": "Win32"},
+            {"cores": 4, "memory": 8, "platform": "Win32"}
+        ],
+        "laptop": [
+            {"cores": 4, "memory": 8, "platform": "Win32"},
+            {"cores": 8, "memory": 16, "platform": "Win32"},
+            {"cores": 6, "memory": 12, "platform": "Win32"},
+            {"cores": 2, "memory": 4, "platform": "Win32"}
+        ],
+        "mobile": [
+            {"cores": 4, "memory": 4, "platform": "Linux armv7l"},
+            {"cores": 6, "memory": 6, "platform": "Linux armv7l"},
+            {"cores": 8, "memory": 8, "platform": "Linux armv7l"},
+            {"cores": 2, "memory": 3, "platform": "Linux armv7l"}
+        ]
+    }
+    
+    @staticmethod
+    def generate_device_metrics(device_type="desktop", seed=None):
+        """Generate realistic device metrics"""
+        if seed:
+            random.seed(seed)
+        
+        if device_type == "desktop":
+            resolution = random.choice(DeviceMetricsGenerator.DESKTOP_RESOLUTIONS)
+            hardware = random.choice(DeviceMetricsGenerator.HARDWARE_CONFIGS["desktop"])
+        elif device_type == "laptop":
+            resolution = random.choice(DeviceMetricsGenerator.LAPTOP_RESOLUTIONS)
+            hardware = random.choice(DeviceMetricsGenerator.HARDWARE_CONFIGS["laptop"])
+        elif device_type == "mobile":
+            resolution = random.choice(DeviceMetricsGenerator.MOBILE_RESOLUTIONS)
+            hardware = random.choice(DeviceMetricsGenerator.HARDWARE_CONFIGS["mobile"])
+        else:
+            resolution = random.choice(DeviceMetricsGenerator.DESKTOP_RESOLUTIONS)
+            hardware = random.choice(DeviceMetricsGenerator.HARDWARE_CONFIGS["desktop"])
+        
+        return {
+            "width": resolution["width"],
+            "height": resolution["height"],
+            "deviceScaleFactor": resolution["scale"],
+            "hardwareConcurrency": hardware["cores"],
+            "deviceMemory": hardware["memory"],
+            "platform": hardware["platform"]
+        }
+
+# Enhanced Canvas Fingerprinting
+class CanvasFingerprintGenerator:
+    """Generate advanced canvas fingerprinting variations"""
+    
+    @staticmethod
+    def generate_canvas_noise_script(seed, features):
+        """Generate advanced canvas noise script"""
+        if not features.enhanced_canvas_fingerprinting:
+            # Basic canvas noise (current behavior)
+            return f'''
+                const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+                CanvasRenderingContext2D.prototype.getImageData = function() {{
+                    const data = origGetImageData.apply(this, arguments);
+                    try {{
+                        const idx = ({seed} % 100) * 4;
+                        if (data && data.data && data.data.length > idx + 3) {{
+                            data.data[idx] = (data.data[idx] + ({seed} % 7)) % 256;
+                            data.data[idx+1] = (data.data[idx+1] + ({seed} % 5)) % 256;
+                            data.data[idx+2] = (data.data[idx+2] + ({seed} % 3)) % 256;
+                        }}
+                    }} catch (e) {{}}
+                    return data;
+                }};
+            '''
+        else:
+            # Advanced canvas fingerprinting
+            return f'''
+                const SEED = {seed};
+                const NOISE_FACTOR = 0.1 + (SEED % 10) * 0.05;
+                
+                // Advanced canvas noise
+                const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+                CanvasRenderingContext2D.prototype.getImageData = function() {{
+                    const data = origGetImageData.apply(this, arguments);
+                    if (!data || !data.data) return data;
+                    
+                    try {{
+                        const pixels = data.data;
+                        const noisePoints = Math.floor(pixels.length * NOISE_FACTOR);
+                        
+                        for (let i = 0; i < noisePoints; i++) {{
+                            const idx = (SEED + i * 7) % pixels.length;
+                            const channel = idx % 4;
+                            const noise = (SEED + i) % 11 - 5;
+                            
+                            if (channel < 3) {{ // RGB channels only
+                                pixels[idx] = Math.max(0, Math.min(255, pixels[idx] + noise));
+                            }}
+                        }}
+                    }} catch (e) {{}}
+                    return data;
+                }};
+                
+                // WebGL noise
+                if (window.WebGLRenderingContext) {{
+                    const origGetParameter = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(parameter) {{
+                        const result = origGetParameter.apply(this, arguments);
+                        
+                        if (parameter === this.RENDERER || parameter === this.VENDOR) {{
+                            return result + String.fromCharCode(65 + (SEED % 26));
+                        }}
+                        return result;
+                    }};
+                }}
+                
+                // Font rendering variations
+                const origFillText = CanvasRenderingContext2D.prototype.fillText;
+                CanvasRenderingContext2D.prototype.fillText = function() {{
+                    const originalFont = this.font;
+                    this.font = originalFont + ` {{letterSpacing: {(SEED % 3) - 1}px}}`;
+                    const result = origFillText.apply(this, arguments);
+                    this.font = originalFont;
+                    return result;
+                }};
+            '''
 
 # Configuration - same as your UI settings but for 5 profiles
 PROFILE_NAMES = [f"test_enhanced_profile_{i}" for i in range(1, 6)]
@@ -82,18 +349,44 @@ def create_profile_with_enhanced_detection(profile_idx):
     # Now launch with enhanced anti-detection (like launch_single_profile.py)
     return launch_profile_enhanced(profile_name, profile_idx)
 
-def launch_profile_enhanced(profile_name, profile_idx):
+def launch_profile_enhanced(profile_name, profile_idx, config=None):
     """Launch profile with enhanced anti-detection measures"""
     
     # Get profile path from bulkcreate-main
     profile_path = BULKCREATE_PATH / "selenium_profiles" / profile_name
+    
+    # Initialize anti-detection features
+    features = AntiDetectionFeatures(config)
+    
+    # Generate unique seed for this profile
+    profile_seed = int(hashlib.md5(f"{profile_name}_{profile_idx}".encode()).hexdigest()[:8], 16)
     
     chrome_options = Options()
     
     # Profile and user agent settings
     chrome_options.add_argument(f"--user-data-dir={profile_path}")
     chrome_options.add_argument("--profile-directory=Default")
-    chrome_options.add_argument(f"--user-agent={PROFILE_CONFIG['user_agent']}")
+    
+    # Dynamic User Agent Generation
+    if features.dynamic_user_agent:
+        # Determine device type from config
+        device_type = config.get('deviceType', 'windows') if config else 'windows'
+        
+        if device_type == 'windows':
+            user_agent = UserAgentGenerator.generate_chrome_windows(profile_seed)
+        elif device_type == 'macos':
+            user_agent = UserAgentGenerator.generate_chrome_macos(profile_seed)
+        elif device_type == 'linux':
+            user_agent = UserAgentGenerator.generate_chrome_linux(profile_seed)
+        else:
+            user_agent = UserAgentGenerator.generate_chrome_windows(profile_seed)
+        
+        logger.info(f"Profile {profile_idx}: Using dynamic user agent")
+    else:
+        user_agent = PROFILE_CONFIG['user_agent']
+        logger.info(f"Profile {profile_idx}: Using static user agent")
+    
+    chrome_options.add_argument(f"--user-agent={user_agent}")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-infobars")
     chrome_options.add_argument(f"--lang=en-US")
@@ -149,9 +442,17 @@ def launch_profile_enhanced(profile_name, profile_idx):
         # Create the webdriver instance
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        # Set window size and position with grid layout
-        window_width = 800
-        window_height = 600
+        # Device Metrics Generation
+        if features.realistic_device_metrics:
+            device_type = config.get('deviceType', 'desktop') if config else 'desktop'
+            device_metrics = DeviceMetricsGenerator.generate_device_metrics(device_type, profile_seed)
+            window_width = device_metrics["width"]
+            window_height = device_metrics["height"]
+            logger.info(f"Profile {profile_idx}: Using realistic device metrics {window_width}x{window_height}")
+        else:
+            window_width = 800
+            window_height = 600
+            logger.info(f"Profile {profile_idx}: Using default window size")
         
         # Calculate position in grid (2x3 grid)
         row = (profile_idx - 1) // 3
@@ -163,47 +464,110 @@ def launch_profile_enhanced(profile_name, profile_idx):
         driver.set_window_size(window_width, window_height)
         driver.set_window_position(x_offset, y_offset)
         
-        # Enhanced anti-detection script injection (from launch_single_profile.py)
-        seed = 12345 + profile_idx
-        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': f'''
-                (function() {{
-                    const SEED = {seed};
-                    try {{
-                        Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
-                        Object.defineProperty(navigator, 'platform', {{ get: () => 'Win32' }});
-                        Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => 8 }});
-                        Object.defineProperty(navigator, 'deviceMemory', {{ get: () => 8 }});
-                        Object.defineProperty(navigator, 'languages', {{ get: () => ['en-US', 'en'] }});
+        # Enhanced anti-detection script injection with configurable features
+        seed = profile_seed
+        
+        # Generate hardware specs
+        if features.hardware_randomization:
+            device_type = config.get('deviceType', 'desktop') if config else 'desktop'
+            device_metrics = DeviceMetricsGenerator.generate_device_metrics(device_type, profile_seed)
+            hardware_concurrency = device_metrics["hardwareConcurrency"]
+            device_memory = device_metrics["deviceMemory"]
+            platform = device_metrics["platform"]
+        else:
+            hardware_concurrency = 8
+            device_memory = 8
+            platform = "Win32"
+        
+        # Generate canvas noise script
+        canvas_script = CanvasFingerprintGenerator.generate_canvas_noise_script(seed, features)
+        
+        # Build the complete anti-detection script
+        anti_detection_script = f'''
+            (function() {{
+                const SEED = {seed};
+                try {{
+                    // Basic navigator overrides
+                    Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+                    Object.defineProperty(navigator, 'platform', {{ get: () => '{platform}' }});
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {hardware_concurrency} }});
+                    Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {device_memory} }});
+                    Object.defineProperty(navigator, 'languages', {{ get: () => ['en-US', 'en'] }});
 
-                        // Plugins shape
-                        const fakePlugins = [{{ name: 'Chrome PDF Plugin' }}, {{ name: 'Chrome PDF Viewer' }}, {{ name: 'Native Client' }}];
-                        const pluginsProxy = new Proxy(fakePlugins, {{
-                            get(target, prop) {{
-                                if (prop === 'length') return target.length;
-                                if (!isNaN(prop)) return target[prop];
-                                return target[prop];
-                            }}
+                    // Plugins shape
+                    const fakePlugins = [{{ name: 'Chrome PDF Plugin' }}, {{ name: 'Chrome PDF Viewer' }}, {{ name: 'Native Client' }}];
+                    const pluginsProxy = new Proxy(fakePlugins, {{
+                        get(target, prop) {{
+                            if (prop === 'length') return target.length;
+                            if (!isNaN(prop)) return target[prop];
+                            return target[prop];
+                        }}
+                    }});
+                    Object.defineProperty(navigator, 'plugins', {{ get: () => pluginsProxy }});
+
+                    // Canvas fingerprinting
+                    {canvas_script}
+                    
+                    // Advanced Navigator Properties
+                    {f'''
+                    if (true) {{ // features.advanced_navigator_properties
+                        // Connection simulation
+                        Object.defineProperty(navigator, 'connection', {{
+                            get: () => ({{
+                                effectiveType: '4g',
+                                rtt: 50 + (SEED % 100),
+                                downlink: 10 + (SEED % 5),
+                                saveData: false
+                            }})
                         }});
-                        Object.defineProperty(navigator, 'plugins', {{ get: () => pluginsProxy }});
-
-                        // Canvas noise for fingerprint variation
-                        const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-                        CanvasRenderingContext2D.prototype.getImageData = function() {{
-                            const data = origGetImageData.apply(this, arguments);
-                            try {{
-                                const idx = (SEED % 100) * 4;
-                                if (data && data.data && data.data.length > idx + 3) {{
-                                    data.data[idx] = (data.data[idx] + (SEED % 7)) % 256;
-                                    data.data[idx+1] = (data.data[idx+1] + (SEED % 5)) % 256;
-                                    data.data[idx+2] = (data.data[idx+2] + (SEED % 3)) % 256;
-                                }}
-                            }} catch (e) {{}}
-                            return data;
-                        }};
-                    }} catch (e) {{}}
-                }})();
-            '''
+                        
+                        // Battery API simulation
+                        if (navigator.getBattery) {{
+                            const originalGetBattery = navigator.getBattery;
+                            navigator.getBattery = function() {{
+                                return Promise.resolve({{
+                                    charging: true,
+                                    chargingTime: 0,
+                                    dischargingTime: Infinity,
+                                    level: 0.8 + (SEED % 20) / 100
+                                }});
+                            }};
+                        }}
+                        
+                        // Media devices simulation
+                        if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {{
+                            const originalEnumerateDevices = navigator.mediaDevices.enumerateDevices;
+                            navigator.mediaDevices.enumerateDevices = function() {{
+                                return Promise.resolve([
+                                    {{ deviceId: 'default', groupId: 'group1', kind: 'audioinput', label: 'Default - Microphone' }},
+                                    {{ deviceId: 'default', groupId: 'group1', kind: 'audiooutput', label: 'Default - Speaker' }},
+                                    {{ deviceId: 'default', groupId: 'group1', kind: 'videoinput', label: 'Default - Camera' }}
+                                ]);
+                            }};
+                        }}
+                        
+                        // Permissions API simulation
+                        if (navigator.permissions && navigator.permissions.query) {{
+                            const originalQuery = navigator.permissions.query;
+                            navigator.permissions.query = function(permission) {{
+                                return Promise.resolve({{ state: 'granted' }});
+                            }};
+                        }}
+                        
+                        // Screen properties
+                        Object.defineProperty(screen, 'availHeight', {{ get: () => {window_height - 40} }});
+                        Object.defineProperty(screen, 'availWidth', {{ get: () => {window_width} }});
+                        Object.defineProperty(screen, 'colorDepth', {{ get: () => 24 }});
+                        Object.defineProperty(screen, 'pixelDepth', {{ get: () => 24 }});
+                    }}
+                    ''' if features.advanced_navigator_properties else ''}
+                    
+                }} catch (e) {{ console.log('Anti-detection script error:', e); }}
+            }})();
+        '''
+        
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': anti_detection_script
         })
         
         # Set up network headers
@@ -226,10 +590,17 @@ def launch_profile_enhanced(profile_name, profile_idx):
             logger.warning(f"Profile {profile_idx}: Locale override failed: {e}")
 
         try:
+            if features.realistic_device_metrics:
+                device_scale_factor = device_metrics["deviceScaleFactor"]
+                logger.info(f"Profile {profile_idx}: Using realistic device scale factor {device_scale_factor}")
+            else:
+                device_scale_factor = 1.0
+                logger.info(f"Profile {profile_idx}: Using default device scale factor")
+                
             driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
                 "width": window_width,
                 "height": window_height,
-                "deviceScaleFactor": 1.0,
+                "deviceScaleFactor": device_scale_factor,
                 "mobile": False,
             })
             logger.info(f"Profile {profile_idx}: Set viewport to {window_width}x{window_height}")
@@ -321,6 +692,26 @@ def create_single_profile_ui_mode():
     # Check if this is actually an enhanced mode profile
     is_enhanced_mode = config.get('enhanced_mode', False)
     
+    # Log anti-detection features if enabled
+    if is_enhanced_mode:
+        features = AntiDetectionFeatures(config)
+        enabled_features = []
+        if features.dynamic_user_agent:
+            enabled_features.append("Dynamic User Agent")
+        if features.enhanced_canvas_fingerprinting:
+            enabled_features.append("Enhanced Canvas Fingerprinting")
+        if features.realistic_device_metrics:
+            enabled_features.append("Realistic Device Metrics")
+        if features.hardware_randomization:
+            enabled_features.append("Hardware Randomization")
+        if features.advanced_navigator_properties:
+            enabled_features.append("Advanced Navigator Properties")
+        
+        if enabled_features:
+            logger.info(f"Enhanced profile '{profile_name}' with features: {', '.join(enabled_features)}")
+        else:
+            logger.info(f"Enhanced profile '{profile_name}' with basic anti-detection only")
+    
     # Check if profile already exists and handle conflicts
     profile_path = BULKCREATE_PATH / "selenium_profiles" / profile_name
     enhanced_metadata_path = profile_path / "enhanced_mode.json"
@@ -372,9 +763,17 @@ def create_single_profile_ui_mode():
                 profile_metadata_path = BULKCREATE_PATH / "selenium_profiles" / profile_name / "enhanced_mode.json"
                 try:
                     profile_metadata_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Create metadata with enhanced mode and anti-detection features
+                    anti_detection_config = config.get('anti_detection', {})
+                    metadata = {
+                        "enhancedMode": True,
+                        "anti_detection": anti_detection_config
+                    }
+                    
                     with open(profile_metadata_path, 'w') as f:
-                        json.dump({"enhancedMode": True}, f)
-                    logger.info(f"✅ Enhanced mode metadata created for '{profile_name}'")
+                        json.dump(metadata, f, indent=2)
+                    logger.info(f"✅ Enhanced mode metadata created for '{profile_name}' with anti-detection features")
                 except Exception as e:
                     logger.warning(f"⚠️ Could not create enhanced mode metadata: {e}")
             else:
@@ -401,8 +800,17 @@ def launch_single_profile_ui_mode():
         logger.error(f"Profile '{profile_name}' not found. Create it first.")
         return False
     
+    # Load config if provided
+    config = None
+    if args.config:
+        try:
+            config = json.loads(args.config)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON config: {e}")
+            return False
+    
     # Launch with enhanced anti-detection
-    driver, idx = launch_profile_enhanced(profile_name, 1)
+    driver, idx = launch_profile_enhanced(profile_name, 1, config)
     
     if driver:
         logger.info(f"✅ Profile '{profile_name}' launched successfully!")

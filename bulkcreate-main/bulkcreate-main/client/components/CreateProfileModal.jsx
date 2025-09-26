@@ -18,6 +18,15 @@ const CreateProfileModal = ({ isOpen, onClose, onSubmit }) => {
   const [proxies, setProxies] = useState([]);
   const [useCustomProxy, setUseCustomProxy] = useState(false);
   const [enhancedMode, setEnhancedMode] = useState(true); // Default to enhanced mode
+  
+  // Phase 1 Anti-Detection Features
+  const [antiDetection, setAntiDetection] = useState({
+    dynamic_user_agent: false,
+    enhanced_canvas_fingerprinting: false,
+    realistic_device_metrics: false,
+    hardware_randomization: false,
+    advanced_navigator_properties: false
+  });
 
   useEffect(() => {
     if (isOpen) {
@@ -157,7 +166,7 @@ const CreateProfileModal = ({ isOpen, onClose, onSubmit }) => {
       startup_urls: cleanedUrls.length > 0 ? cleanedUrls : ['https://www.google.com']
     };
     
-    onSubmit(formData.name, config, formData.groupId, enhancedMode);
+    onSubmit(formData.name, config, formData.groupId, enhancedMode, antiDetection);
   };
 
   const resetForm = () => {
@@ -175,6 +184,13 @@ const CreateProfileModal = ({ isOpen, onClose, onSubmit }) => {
     });
     setEnhancedMode(true); // Reset to enhanced mode
     setUseCustomProxy(false);
+    setAntiDetection({
+      dynamic_user_agent: false,
+      enhanced_canvas_fingerprinting: false,
+      realistic_device_metrics: false,
+      hardware_randomization: false,
+      advanced_navigator_properties: false
+    });
   };
 
   const handleClose = () => {
@@ -451,6 +467,143 @@ const CreateProfileModal = ({ isOpen, onClose, onSubmit }) => {
               </div>
             </div>
           </div>
+
+          {/* Phase 1 Anti-Detection Features */}
+          {enhancedMode && (
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-gray-300">Advanced Anti-Detection Features</h3>
+              <p className="text-sm text-gray-400">
+                Configure specific anti-detection features. All features are disabled by default for backward compatibility.
+              </p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Dynamic User Agent Generation */}
+                <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-600">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium text-gray-300">
+                      Dynamic User Agent Generation
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAntiDetection(prev => ({ ...prev, dynamic_user_agent: !prev.dynamic_user_agent }))}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        antiDetection.dynamic_user_agent ? 'bg-blue-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                          antiDetection.dynamic_user_agent ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Generate realistic user agents for different browsers and devices
+                  </p>
+                </div>
+
+                {/* Enhanced Canvas Fingerprinting */}
+                <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-600">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium text-gray-300">
+                      Enhanced Canvas Fingerprinting
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAntiDetection(prev => ({ ...prev, enhanced_canvas_fingerprinting: !prev.enhanced_canvas_fingerprinting }))}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        antiDetection.enhanced_canvas_fingerprinting ? 'bg-blue-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                          antiDetection.enhanced_canvas_fingerprinting ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Advanced canvas noise with WebGL and font rendering variations
+                  </p>
+                </div>
+
+                {/* Realistic Device Metrics */}
+                <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-600">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium text-gray-300">
+                      Realistic Device Metrics
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAntiDetection(prev => ({ ...prev, realistic_device_metrics: !prev.realistic_device_metrics }))}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        antiDetection.realistic_device_metrics ? 'bg-blue-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                          antiDetection.realistic_device_metrics ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Use realistic screen resolutions and device scaling factors
+                  </p>
+                </div>
+
+                {/* Hardware Randomization */}
+                <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-600">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium text-gray-300">
+                      Hardware Randomization
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAntiDetection(prev => ({ ...prev, hardware_randomization: !prev.hardware_randomization }))}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        antiDetection.hardware_randomization ? 'bg-blue-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                          antiDetection.hardware_randomization ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Randomize CPU cores, memory, and platform detection
+                  </p>
+                </div>
+
+                {/* Advanced Navigator Properties */}
+                <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-600 md:col-span-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium text-gray-300">
+                      Advanced Navigator Properties
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAntiDetection(prev => ({ ...prev, advanced_navigator_properties: !prev.advanced_navigator_properties }))}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        antiDetection.advanced_navigator_properties ? 'bg-blue-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                          antiDetection.advanced_navigator_properties ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Simulate network connection, battery API, media devices, and permissions
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Startup URLs */}
           <div className="space-y-4">

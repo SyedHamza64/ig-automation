@@ -77,12 +77,12 @@ function App() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleCreate = async (name, config, groupId, enhancedMode = true) => {
+  const handleCreate = async (name, config, groupId, enhancedMode = true, antiDetection = {}) => {
     try {
       const response = await fetch(`${API_URL}/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, config, enhancedMode }),
+        body: JSON.stringify({ name, config, enhancedMode, antiDetection }),
       });
       if (!response.ok) {
         const errorData = await response.json();
@@ -128,12 +128,12 @@ function App() {
     }
   };
 
-  const handleBulkCreate = async (count, deviceType, prefix, enhancedMode = true) => {
+  const handleBulkCreate = async (count, deviceType, prefix, enhancedMode = true, antiDetection = {}) => {
     try {
       const response = await fetch(`${API_URL}/profiles/bulk-create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count, deviceType, prefix, enhancedMode }),
+        body: JSON.stringify({ count, deviceType, prefix, enhancedMode, antiDetection }),
       });
       if (!response.ok) {
         const errorData = await response.json();
