@@ -238,7 +238,7 @@ def create_chrome_profile(config):
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Hide automation-controlled flag
     chrome_options.add_experimental_option("useAutomationExtension", False)  # Disable automation extension
     
-    # Additional stealth options (same as launch_single_profile.py)
+    # Additional stealth options
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-extensions")
