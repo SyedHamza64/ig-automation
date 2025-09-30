@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from app.db.session import get_db
 from app.models.action_log import ActionLog
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -33,14 +34,19 @@ def list_logs(
         if isinstance(payload, dict):
             extracted_result = payload.get("result") or payload.get("results")
 
+        # If the row is 'running' but we have a result payload, surface it as 'success'.
+        status = r.status
+        if status == "running" and extracted_result is not None:
+            status = "success"
+
         results.append({
             "id": r.id,
             "account_id": r.account_id,
             "profile_id": r.profile_id,
-            "action": r.action_type,                 # map action_type → action
-            "status": r.status,
+            "action": r.action_type,
+            "status": status,
             "error_message": r.error_message,
             "created_at": r.created_at.isoformat() if r.created_at else None,
-            "result": extracted_result,              # take nested "result"
+            "result": extracted_result,
         })
     return results

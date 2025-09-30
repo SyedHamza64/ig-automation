@@ -7,7 +7,7 @@ class ActionLog(Base):
     __tablename__ = "action_logs"
     id = Column(Integer, primary_key=True)
     account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
-    profile_id = Column(Integer, ForeignKey("profiles.id", ondelete="SET NULL"))
+    profile_id = Column(Integer, nullable=True)  # Now just stores account_id since profiles are merged into accounts
     action_type = Column(String(32), nullable=False, index=True)  # follow|unfollow|like|dm
     payload = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     status = Column(String(32), nullable=False, index=True)       # queued|running|success|error|skipped|rate_limited

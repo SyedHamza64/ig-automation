@@ -10,7 +10,7 @@ export function Table({ children, className = "", ...rest }: HTMLAttributes<HTML
 
 export function THead({ children, className = "", ...rest }: HTMLAttributes<HTMLTableSectionElement>) {
   return (
-    <thead className={`bg-gray-50 text-left text-xs uppercase text-gray-500 ${className}`} {...rest}>
+    <thead className={`bg-gray-50 text-left text-xs uppercase text-gray-500 dark:bg-gray-700 dark:text-gray-400 ${className}`} {...rest}>
       {children}
     </thead>
   );

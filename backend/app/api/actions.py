@@ -1,6 +1,8 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import update
+import asyncio
 
 from ..db.session import SessionLocal
 from ..schemas.actions import (
@@ -104,7 +106,7 @@ async def do_dm(req: DMRequest, db: Session = Depends(get_db), _=Depends(require
 
 from fastapi import Depends
 from sqlalchemy.orm import Session
-from ..db.session import get_db
+from ..db.session import get_db, SessionLocal
 from ..models.action_log import ActionLog
 
 @router.get("/actions/logs/{log_id}")
@@ -138,8 +140,8 @@ def list_logs(limit: int = 10, db: Session = Depends(get_db)):
 
 
 # -------------------- Streaming mass follow/unfollow (SSE) --------------------
-from ..services.actions import ensure_profile_ws, perform_mass_follow_stream
-from ..services.warmup import perform_warmup_stream
+from ..services.actions import ensure_profile_ws, perform_mass_follow_stream, _now
+from ..services.warmup import perform_reels_warmup
 import random
 from ..core.security import decode_token
 from ..models.user import User
@@ -155,34 +157,174 @@ async def mass_follow_stream(
     mode: str = "follow",  # or "unfollow"
     limit: int = 50,
     percent: int | None = None,
-    max_scrolls: int = 200,
+    max_scrolls: int = 50,  # Reduced default
     section: str = "followers",  # or "following"
     debug_dom: bool = False,
+    max_duration_minutes: int = 10,  # Maximum 10 minutes
     db: Session = Depends(get_db),
     _=Depends(require_admin)
 ):
+    # Create an ActionLog to reflect this streaming job
+    log_row = ActionLog(
+        account_id=account_id,
+        profile_id=profile_id,
+        action_type=("unfollow" if mode == "unfollow" else "follow"),
+        payload={
+            "mode": mode,
+            "username": username,
+            "limit": limit,
+            "section": section,
+        },
+        status="running",
+        started_at=_now(),
+    )
+    db.add(log_row)
+    db.commit()
+    db.refresh(log_row)
+
     try:
-        ws_url = ensure_profile_ws(db, profile_id)
+        ws_url = await ensure_profile_ws(db, profile_id)
     except Exception as e:
         log.exception("ensure_profile_ws failed")
         async def error_gen():
             yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
             yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+            # Update log as error
+            try:
+                log_row.status = "error"
+                log_row.error_message = f"ws_error: {str(e)}"
+                log_row.finished_at = _now()
+                db.commit()
+            except Exception:
+                pass
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     async def event_generator():
+        upd_db = SessionLocal()
         try:
             start = {"type":"start","account_id":account_id,"profile_id":profile_id,"username":username,"mode":mode}
             log.info("mass-stream start %s", start)
             yield f"data: {json.dumps(start)}\n\n"
-            async for ev in perform_mass_follow_stream(ws_url, username, mode, limit=limit, percent=percent, max_scrolls=max_scrolls, section=section, debug_dom=debug_dom):
-                log.debug("mass-stream ev %s", ev)
-                yield f"data: {json.dumps(ev)}\n\n"
-        except Exception as e:
-            log.exception("mass-stream crashed")
-            yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+            acted = 0
+            processed = 0
+            scrolls = 0
+            last_progress = asyncio.get_event_loop().time()
+            
+            # Initialize variables for finalization
+            final_acted = 0
+            final_processed = 0
+            final_scrolls = 0
+
+            async def watchdog():
+                try:
+                    log.info(f"Watchdog started for log {log_row.id}")
+                    await asyncio.sleep(3)  # Wait 3 seconds
+                    log.info(f"Watchdog timeout reached for log {log_row.id}")
+                    # Force finalize after timeout
+                    try:
+                        status = "success" if acted > 0 else "error"
+                        base_payload = (log_row.payload or {}) if hasattr(log_row, 'payload') else {}
+                        base_payload["result"] = {"acted": acted, "processed": processed, "scrolls": scrolls, "mode": mode, "username": username, "section": section, "reason": "watchdog_timeout"}
+                        stmt = (
+                            update(ActionLog)
+                            .where(ActionLog.id == log_row.id)
+                            .values(status=status, payload=base_payload, finished_at=_now())
+                        )
+                        upd_db.execute(stmt)
+                        upd_db.commit()
+                        log.info(f"Watchdog finalized log {log_row.id} as {status}")
+                    except Exception as e:
+                        log.error(f"Watchdog failed: {e}")
+                except Exception as e:
+                    log.error(f"Watchdog exception: {e}")
+
+            wd_task = asyncio.create_task(watchdog())
+            try:
+                async for ev in perform_mass_follow_stream(ws_url, username, mode, limit=limit, percent=percent, max_scrolls=max_scrolls, section=section, debug_dom=debug_dom, max_duration_minutes=max_duration_minutes):
+                    log.debug("mass-stream ev %s", ev)
+                try:
+                    if isinstance(ev, dict):
+                        acted = ev.get("acted", acted)
+                        processed = ev.get("processed", processed)
+                        scrolls = ev.get("scrolls", scrolls)
+                        last_progress = asyncio.get_event_loop().time()
+                        
+                        # Update final values for finalization
+                        final_acted = acted
+                        final_processed = processed
+                        final_scrolls = scrolls
+                        # Periodically update payload with progress so logs show partial results
+                        if ev.get("type") in ("action", "scroll", "dwell"):
+                            try:
+                                base_payload = (log_row.payload or {}) if hasattr(log_row, 'payload') else {}
+                                base_payload["result"] = {"acted": acted, "processed": processed, "scrolls": scrolls, "mode": mode, "username": username, "section": section}
+                                stmt = (
+                                    update(ActionLog)
+                                    .where(ActionLog.id == log_row.id)
+                                    .values(payload=base_payload)
+                                )
+                                upd_db.execute(stmt)
+                                upd_db.commit()
+                            except Exception:
+                                pass
+                        if ev.get("type") == "done":
+                            # Update log to success BEFORE emitting done
+                            try:
+                                base_payload = (log_row.payload or {}) if hasattr(log_row, 'payload') else {}
+                                base_payload["result"] = {"acted": acted, "processed": processed, "scrolls": scrolls, "mode": mode, "username": username, "section": section, "reason": ev.get("reason")}
+                                stmt = (
+                                    update(ActionLog)
+                                    .where(ActionLog.id == log_row.id)
+                                    .values(status="success", payload=base_payload, finished_at=_now())
+                                )
+                                upd_db.execute(stmt)
+                                upd_db.commit()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                    yield f"data: {json.dumps(ev)}\n\n"
+            except Exception as e:
+                log.exception("mass-stream crashed")
+                yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+                try:
+                    stmt = (
+                        update(ActionLog)
+                        .where(ActionLog.id == log_row.id)
+                        .values(status="error", error_message=str(e), finished_at=_now())
+                    )
+                    upd_db.execute(stmt)
+                    upd_db.commit()
+                except Exception:
+                    pass
         finally:
+            log.info(f"Stream finally block executing for log {log_row.id}")
             yield f"data: {json.dumps({'type':'done','reason':'closed'})}\n\n"
+            # Always finalize - mark success with a compact summary if not already error
+            try:
+                base_payload = (log_row.payload or {}) if hasattr(log_row, 'payload') else {}
+                base_payload["result"] = {"acted": final_acted, "processed": final_processed, "scrolls": final_scrolls, "mode": mode, "username": username, "section": section, "reason": "stream_closed"}
+                stmt = (
+                    update(ActionLog)
+                    .where(ActionLog.id == log_row.id)
+                    .values(status="success", payload=base_payload, finished_at=_now())
+                )
+                upd_db.execute(stmt)
+                upd_db.commit()
+                log.info(f"Stream finalized log {log_row.id} as success")
+            except Exception as e:
+                log.error(f"Stream finalization failed: {e}")
+            try:
+                # Wait for watchdog to complete or cancel it
+                if not wd_task.done():
+                    wd_task.cancel()
+                    try:
+                        await wd_task
+                    except asyncio.CancelledError:
+                        pass
+                upd_db.close()
+            except Exception:
+                pass
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -196,9 +338,10 @@ async def mass_follow_stream_open(
     mode: str = "follow",
     limit: int = 50,
     percent: int | None = None,
-    max_scrolls: int = 200,
+    max_scrolls: int = 50,  # Reduced default
     section: str = "followers",
     debug_dom: bool = False,
+    max_duration_minutes: int = 10,  # Maximum 10 minutes
     token: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -221,28 +364,161 @@ async def mass_follow_stream_open(
             yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
         return StreamingResponse(_err_unauth(), media_type="text/event-stream")
 
+    # Create an ActionLog to reflect this streaming job
+    log_row = ActionLog(
+        account_id=account_id,
+        profile_id=profile_id,
+        action_type=("unfollow" if mode == "unfollow" else "follow"),
+        payload={
+            "mode": mode,
+            "username": username,
+            "limit": limit,
+            "section": section,
+        },
+        status="running",
+        started_at=_now(),
+    )
+    db.add(log_row)
+    db.commit()
+    db.refresh(log_row)
+
     try:
-        ws_url = ensure_profile_ws(db, profile_id)
+        ws_url = await ensure_profile_ws(db, profile_id)
     except Exception as e:
         log.exception("ensure_profile_ws failed")
         async def error_gen():
             yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
             yield f"data: {json.dumps({'type':'done','reason':'error'})}\n\n"
+            try:
+                log_row.status = "error"
+                log_row.error_message = f"ws_error: {str(e)}"
+                log_row.finished_at = _now()
+                db.commit()
+            except Exception:
+                pass
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     async def event_generator():
+        upd_db = SessionLocal()
         try:
             start = {"type":"start","account_id":account_id,"profile_id":profile_id,"username":username,"mode":mode}
             log.info("mass-stream-open start %s", start)
             yield f"data: {json.dumps(start)}\n\n"
-            async for ev in perform_mass_follow_stream(ws_url, username, mode, limit=limit, percent=percent, max_scrolls=max_scrolls, section=section, debug_dom=debug_dom):
-                log.debug("mass-stream-open ev %s", ev)
-                yield f"data: {json.dumps(ev)}\n\n"
-        except Exception as e:
-            log.exception("mass-stream-open crashed")
-            yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+            acted = 0
+            processed = 0
+            scrolls = 0
+            last_progress = asyncio.get_event_loop().time()
+            
+            # Initialize variables for finalization
+            final_acted = 0
+            final_processed = 0
+            final_scrolls = 0
+
+            async def watchdog():
+                try:
+                    log.info(f"Watchdog started for log {log_row.id}")
+                    await asyncio.sleep(3)  # Wait 3 seconds
+                    log.info(f"Watchdog timeout reached for log {log_row.id}")
+                    # Force finalize after timeout
+                    try:
+                        status = "success" if acted > 0 else "error"
+                        base_payload = (log_row.payload or {}) if hasattr(log_row, 'payload') else {}
+                        base_payload["result"] = {"acted": acted, "processed": processed, "scrolls": scrolls, "mode": mode, "username": username, "section": section, "reason": "watchdog_timeout"}
+                        stmt = (
+                            update(ActionLog)
+                            .where(ActionLog.id == log_row.id)
+                            .values(status=status, payload=base_payload, finished_at=_now())
+                        )
+                        upd_db.execute(stmt)
+                        upd_db.commit()
+                        log.info(f"Watchdog finalized log {log_row.id} as {status}")
+                    except Exception as e:
+                        log.error(f"Watchdog failed: {e}")
+                except Exception as e:
+                    log.error(f"Watchdog exception: {e}")
+
+            wd_task = asyncio.create_task(watchdog())
+            try:
+                async for ev in perform_mass_follow_stream(ws_url, username, mode, limit=limit, percent=percent, max_scrolls=max_scrolls, section=section, debug_dom=debug_dom, max_duration_minutes=max_duration_minutes):
+                    log.debug("mass-stream-open ev %s", ev)
+                try:
+                    if isinstance(ev, dict):
+                        acted = ev.get("acted", acted)
+                        processed = ev.get("processed", processed)
+                        scrolls = ev.get("scrolls", scrolls)
+                        last_progress = asyncio.get_event_loop().time()
+                        
+                        # Update final values for finalization
+                        final_acted = acted
+                        final_processed = processed
+                        final_scrolls = scrolls
+                        if ev.get("type") in ("action", "scroll", "dwell"):
+                            try:
+                                base_payload = (log_row.payload or {}) if hasattr(log_row, 'payload') else {}
+                                base_payload["result"] = {"acted": acted, "processed": processed, "scrolls": scrolls, "mode": mode, "username": username, "section": section}
+                                stmt = (
+                                    update(ActionLog)
+                                    .where(ActionLog.id == log_row.id)
+                                    .values(payload=base_payload)
+                                )
+                                upd_db.execute(stmt)
+                                upd_db.commit()
+                            except Exception:
+                                pass
+                        if ev.get("type") == "done":
+                            # Update log to success BEFORE emitting done
+                            try:
+                                base_payload = (log_row.payload or {}) if hasattr(log_row, 'payload') else {}
+                                base_payload["result"] = {"acted": acted, "processed": processed, "scrolls": scrolls, "mode": mode, "username": username, "section": section, "reason": ev.get("reason")}
+                                stmt = (
+                                    update(ActionLog)
+                                    .where(ActionLog.id == log_row.id)
+                                    .values(status="success", payload=base_payload, finished_at=_now())
+                                )
+                                upd_db.execute(stmt)
+                                upd_db.commit()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                    yield f"data: {json.dumps(ev)}\n\n"
+            except Exception as e:
+                log.exception("mass-stream-open crashed")
+                yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+                try:
+                    stmt = (
+                        update(ActionLog)
+                        .where(ActionLog.id == log_row.id)
+                        .values(status="error", error_message=str(e), finished_at=_now())
+                    )
+                    upd_db.execute(stmt)
+                    upd_db.commit()
+                except Exception:
+                    pass
         finally:
             yield f"data: {json.dumps({'type':'done','reason':'closed'})}\n\n"
+            try:
+                stmt = (
+                    update(ActionLog)
+                    .where(ActionLog.id == log_row.id)
+                    .where(ActionLog.status == "running")
+                    .values(status="success", payload=(log_row.payload or {}), finished_at=_now())
+                )
+                upd_db.execute(stmt)
+                upd_db.commit()
+            except Exception:
+                pass
+            try:
+                # Wait for watchdog to complete or cancel it
+                if not wd_task.done():
+                    wd_task.cancel()
+                    try:
+                        await wd_task
+                    except asyncio.CancelledError:
+                        pass
+                upd_db.close()
+            except Exception:
+                pass
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -259,7 +535,7 @@ async def warmup_stream(
     _=Depends(require_admin),
 ):
     try:
-        ws_url = ensure_profile_ws(db, profile_id)
+        ws_url = await ensure_profile_ws(db, profile_id)
     except Exception as e:
         async def error_gen():
             yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
@@ -271,7 +547,7 @@ async def warmup_stream(
 
     async def event_generator():
         try:
-            async for ev in perform_warmup_stream(ws_url, duration_sec=resolved_duration, max_likes=max_likes, content=content):
+            async for ev in perform_reels_warmup(ws_url, duration_sec=resolved_duration, max_likes=max_likes):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
@@ -312,7 +588,7 @@ async def warmup_stream_open(
 
     # resolve WS and duration
     try:
-        ws_url = ensure_profile_ws(db, profile_id)
+        ws_url = await ensure_profile_ws(db, profile_id)
     except Exception as e:
         async def error_gen():
             yield f"data: {json.dumps({'type':'error','message':f'ws_error: {str(e)}'})}\n\n"
@@ -323,7 +599,7 @@ async def warmup_stream_open(
 
     async def event_generator():
         try:
-            async for ev in perform_warmup_stream(ws_url, duration_sec=resolved_duration, max_likes=max_likes, content=content):
+            async for ev in perform_reels_warmup(ws_url, duration_sec=resolved_duration, max_likes=max_likes):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"

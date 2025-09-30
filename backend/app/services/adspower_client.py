@@ -2,7 +2,7 @@ import httpx
 from typing import Any, Dict, Optional
 from app.core.config import settings
 
-BASE = settings.ADSPOWER_BASE_URL.rstrip("/")
+BASE = "http://invalid.local"
 
 async def status() -> Dict[str, Any]:
     """

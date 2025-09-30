@@ -4,7 +4,8 @@ export type ProfileRow = {
   id: number;
   account_id: number | null;
   account_handle: string | null;
-  adspower_profile_id: string;
+  adspower_profile_id: string | null; // Made nullable for bulkcreate profiles
+  bulk_profile_name: string | null; // New field for bulkcreate profiles
   health: string | null;
   last_ws_puppeteer: string | null;
   last_opened_at?: string | null; // if backend later returns it
@@ -46,4 +47,31 @@ export const startWarmupStream = (profile_id: number | string, content: "home"|"
   }).toString();
   const url = `${base}/actions/warmup-stream-open?${qs}`;
   return new EventSource(url);
+};
+
+// Bulkcreate-specific API functions
+export const listBulkcreateProfiles = async (): Promise<any> => {
+  const response = await fetch('http://127.0.0.1:4000/api/profiles');
+  return response.json();
+};
+
+export const attachBulkProfile = async (bulkProfileName: string, accountId?: number) => {
+  return (await api.post('/profiles/attach-bulk', {
+    bulk_profile_name: bulkProfileName,
+    account_id: accountId
+  })).data;
+};
+
+export const getProfileByBulk = async (bulkName: string) => {
+  return (await api.get(`/profiles/by-bulk/${bulkName}`)).data;
+};
+
+export const createBulkProfile = async (bulkProfileName: string) => {
+  return (await api.post('/profiles/create-bulk', {
+    bulk_profile_name: bulkProfileName
+  })).data;
+};
+
+export const unlinkProfile = async (profileId: number) => {
+  return (await api.post(`/profiles/${profileId}/unlink`)).data;
 };

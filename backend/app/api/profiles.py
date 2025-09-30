@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.profile import Profile
 from app.models.account import Account
-from app.services import adspower_client
+from app.services import bulkcreate_client
 from app.services.browser_probe import probe_cdp
 from app.api.auth import require_admin
 from app.services.actions import ensure_profile_ws, CDPClient
@@ -45,11 +45,81 @@ def list_profiles(
             "account_id": p.account_id,
             "account_handle": getattr(p.account, "handle", None) if p.account else None,
             "adspower_profile_id": p.adspower_profile_id,
+            "bulk_profile_name": getattr(p, "bulk_profile_name", None),
             "health": p.health,
             "last_ws_puppeteer": p.last_ws_puppeteer,
         }
         for p in rows
     ]
+
+# ---------- LOOKUP BY BULK NAME (read-only) ----------
+@router.get("/by-bulk/{bulk_name}")
+def get_by_bulk(bulk_name: str, db: Session = Depends(get_db)):
+    name = (bulk_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="bulk_name required")
+    p: Optional[Profile] = (
+        db.query(Profile)
+        .outerjoin(Account, Profile.account_id == Account.id)
+        .filter(Profile.bulk_profile_name == name)
+        .first()
+    )
+    if not p:
+        return {"linked": False, "bulk_profile_name": name}
+    return {
+        "linked": True,
+        "bulk_profile_name": name,
+        "profile_db_id": p.id,
+        "account_id": p.account_id,
+        "account_handle": getattr(p.account, "handle", None) if p.account else None,
+        "health": p.health,
+        "last_ws_puppeteer": p.last_ws_puppeteer,
+    }
+
+# ---------- CREATE BULK PROFILE ROW (no account) ----------
+class CreateBulkIn(BaseModel):
+    bulk_profile_name: str
+
+
+@router.post("/create-bulk", dependencies=[Depends(require_admin)])
+def create_bulk_profile(
+    payload: CreateBulkIn,
+    db: Session = Depends(get_db),
+):
+    try:
+        name = (payload.bulk_profile_name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="bulk_profile_name required")
+        
+        # Check if profile already exists
+        existing = db.query(Profile).filter(Profile.bulk_profile_name == name).first()
+        if existing:
+            return {
+                "id": existing.id,
+                "account_id": existing.account_id,
+                "bulk_profile_name": existing.bulk_profile_name,
+                "health": existing.health,
+                "already": True,
+            }
+        
+        # Create new profile
+        p = Profile(account_id=None, bulk_profile_name=name, health="unknown")
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+        
+        return {
+            "id": p.id,
+            "account_id": p.account_id,
+            "bulk_profile_name": p.bulk_profile_name,
+            "health": p.health,
+            "already": False,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("create-bulk failed")
+        raise HTTPException(status_code=500, detail=f"create-bulk failed: {str(e)}")
 
 # ---------- COMPARE (new) ----------
 @router.post("/compare")
@@ -172,41 +242,92 @@ async def open_profile(profile_db_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(status_code=404, detail="profile not found")
 
-    res = await adspower_client.open_profile(p.adspower_profile_id)
+    # Bulkcreate integration (exclusive)
+    bulk_name = p.bulk_profile_name or p.adspower_profile_id
+    if not bulk_name:
+        raise HTTPException(status_code=400, detail="profile not linked to a bulkcreate name")
 
-    ok = False
-    pupp_ws = None
-    sel_ws = None
+    # Try to obtain WS with retries (handles slow Chrome startup and already-running cases)
+    ws: Optional[str] = None
+    last_err: Optional[str] = None
+    for i in range(45):  # ~90s total (45 * 2s)
+        try:
+            logger.info(f"Attempt {i+1}/45: calling bulkcreate_client.launch_cdp for {bulk_name}")
+            res = await bulkcreate_client.launch_cdp(bulk_name)
+            logger.info(f"bulkcreate response: {res}")
+            ws = (res or {}).get("ws")
+            if ws:
+                logger.info(f"Got WS: {ws}")
+                break
+        except Exception as e:
+            last_err = str(e)
+            logger.error(f"Attempt {i+1} failed: {e}")
+        await asyncio.sleep(2)
+    if not ws:
+        logger.error(f"No WS after 45 attempts. Last error: {last_err}")
+        raise HTTPException(status_code=502, detail={"error": "no ws returned after retries", "last_error": last_err})
 
-    if isinstance(res, dict):
-        code = res.get("code")
-        ok = (code == 0) or str(res.get("status_code", 200)).startswith("2")
-        ws = (res.get("data") or {}).get("ws") if "data" in res else None
-        if isinstance(ws, dict):
-            pupp_ws = ws.get("puppeteer")
-            sel_ws = ws.get("selenium")
-    if ok:
-        p.last_opened_at = datetime.now(timezone.utc)
-        p.health = "ok"
-        if pupp_ws: p.last_ws_puppeteer = pupp_ws
-        if sel_ws:  p.last_ws_selenium  = sel_ws
-        db.add(p); db.commit(); db.refresh(p)
-        # QoL fallback
-        if not pupp_ws:
-            try:
-                url = f"{settings.ADSPOWER_BASE_URL}/api/v1/browser/active?user_id={p.adspower_profile_id}"
-                resp = requests.get(url, timeout=5)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    ws = data.get("data", {}).get("ws")
-                    if ws:
-                        p.last_ws_puppeteer = ws.get("puppeteer")
-                        p.last_ws_selenium = ws.get("selenium")
-                        db.add(p); db.commit(); db.refresh(p)
-            except Exception as e:
-                logger.warning(f"WS auto-refresh failed: {e}")
+    p.last_opened_at = datetime.now(timezone.utc)
+    p.health = "ok"
+    p.last_ws_puppeteer = ws
+    db.add(p); db.commit(); db.refresh(p)
+    return {"profile_db_id": profile_db_id, "ok": True, "ws": ws}
 
-    return {"profile_db_id": profile_db_id, "ok": ok, "result": res}
+
+# ---------- ATTACH BULK (link a bulkcreate profile name) ----------
+@router.post("/attach-bulk", dependencies=[Depends(require_admin)])
+def attach_bulk_profile(
+    account_id: int | None = Body(None),
+    bulk_profile_name: str = Body(...),
+    force: bool = Body(False),
+    db: Session = Depends(get_db),
+):
+    try:
+        name = (bulk_profile_name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="bulk_profile_name required")
+
+        # If linking to an account, update the Account model directly
+        if account_id is not None:
+            acc = db.query(Account).get(account_id)
+            if not acc:
+                raise HTTPException(status_code=404, detail="account not found")
+
+            # Check if account already has a profile linked
+            if (acc.bulk_profile_name or acc.adspower_profile_id) and not force:
+                raise HTTPException(status_code=409, detail=f"account_id {account_id} already linked to profile; pass force=true to swap")
+
+            # Check if bulk_profile_name is already used by another account
+            existing_account = db.query(Account).filter(Account.bulk_profile_name == name).first()
+            if existing_account and existing_account.id != account_id:
+                raise HTTPException(status_code=409, detail=f"bulk_profile_name '{name}' already attached to account_id={existing_account.id}")
+
+            # Update the account with the bulk profile name
+            acc.bulk_profile_name = name
+            acc.health = "unknown"
+            db.add(acc)
+            db.commit()
+            db.refresh(acc)
+
+            return {
+                "id": acc.id,
+                "account_id": acc.id,
+                "bulk_profile_name": acc.bulk_profile_name,
+                "health": acc.health,
+            }
+        else:
+            # No account specified: just return the bulk profile name
+            return {
+                "id": None,
+                "account_id": None,
+                "bulk_profile_name": name,
+                "health": "unknown",
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("attach-bulk failed")
+        raise HTTPException(status_code=500, detail="attach-bulk failed; see server logs")
 
 # ---------- CLOSE ----------
 @router.post("/{profile_db_id}/close", dependencies=[Depends(require_admin)])
@@ -375,3 +496,77 @@ def delete_profile(profile_db_id: int, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     return {"deleted_id": profile_db_id}
+
+# ---------- UNLINK ----------
+@router.post("/{profile_id}/unlink", dependencies=[Depends(require_admin)])
+async def unlink_profile(profile_id: int, db: Session = Depends(get_db)):
+    """Unlink a profile from its bulkcreate profile and account."""
+    try:
+        profile = db.query(Profile).get(profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="profile not found")
+        
+        # Store the bulk profile name for logging
+        bulk_name = profile.bulk_profile_name
+        
+        # Unlink from bulkcreate and account
+        profile.bulk_profile_name = None
+        profile.account_id = None
+        profile.last_ws_puppeteer = None
+        profile.last_ws_selenium = None
+        profile.health = "unknown"
+        
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+        
+        logger.info(f"Unlinked profile {profile_id} from bulkcreate profile: {bulk_name}")
+        return {"profile_id": profile_id, "unlinked": True, "bulk_profile_name": bulk_name}
+        
+    except Exception as e:
+        logger.error(f"Error unlinking profile {profile_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Delete unused profiles endpoint
+@router.delete("/unused", dependencies=[Depends(require_admin)])
+def delete_unused_profiles(db: Session = Depends(get_db)):
+    """Delete all profiles that have no meaningful connections (no account_id, no bulk_profile_name, no adspower_profile_id)"""
+    try:
+        # Find profiles with no meaningful connections
+        unused_profiles = db.query(Profile).filter(
+            Profile.account_id.is_(None),
+            Profile.bulk_profile_name.is_(None),
+            Profile.adspower_profile_id.is_(None)
+        ).all()
+        
+        if not unused_profiles:
+            return {"deleted": 0, "message": "No unused profiles found"}
+        
+        # Get profile details before deletion
+        profile_details = [
+            {"id": p.id, "health": p.health, "created_at": p.created_at} 
+            for p in unused_profiles
+        ]
+        
+        # Delete the profiles
+        deleted_count = 0
+        for profile in unused_profiles:
+            try:
+                db.delete(profile)
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"Error deleting profile {profile.id}: {e}")
+                continue
+        
+        db.commit()
+        
+        return {
+            "deleted": deleted_count,
+            "profiles": profile_details[:deleted_count],
+            "message": f"Successfully deleted {deleted_count} unused profiles"
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting unused profiles: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting unused profiles: {str(e)}")

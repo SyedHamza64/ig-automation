@@ -3,8 +3,11 @@ import { api } from "./client";
 export type AccountRow = { 
   id: number; 
   handle: string; 
-  profile_id: number | null; 
-  adspower_profile_id?: string | null 
+  bulk_profile_name?: string | null;
+  adspower_profile_id?: string | null;
+  health?: string | null;
+  last_ws_puppeteer?: string | null;
+  last_opened_at?: string | null;
 };
 
 export type LoginState = "logged_in" | "login" | "error" | "unknown";
@@ -38,9 +41,49 @@ export const getLoginState = async (profile_id: number) => {
 export const wsCheckProfile = async (profile_id: number) => 
   (await api.get(`/profiles/${profile_id}/ws-check`)).data;
 
-// Legacy functions (keep for compatibility)
-export const createAccount = async (body: { username: string; profile_id?: number | string }) =>
-  (await api.post("/accounts", body)).data;
+// Account creation functions
+export const createAccount = async (handle: string) => {
+  return (await api.post(`/accounts/create-simple?handle=${encodeURIComponent(handle)}`)).data;
+};
 
-export const deleteAccount = async (id: number) =>
-  (await api.delete(`/accounts/${id}`)).data;
+export const createBulkAccounts = async (count: number, prefix: string = 'account') => {
+  const response = await api.post(`/accounts/create-bulk?prefix=${encodeURIComponent(prefix)}&count=${count}`);
+  return response.data.accounts;
+};
+
+export const deleteAccount = async (id: number) => {
+  return (await api.delete(`/accounts/${id}`)).data;
+};
+
+export const getUnlinkedAccounts = async () => {
+  return (await api.get('/accounts/unlinked')).data;
+};
+
+export const deleteUnlinkedAccounts = async () => {
+  return (await api.delete('/accounts/unlinked')).data;
+};
+
+// Orphaned link cleanup functions
+export const detectOrphanedLinks = async () => {
+  return (await api.get('/accounts/orphaned-links')).data;
+};
+
+export const cleanupOrphanedLinks = async () => {
+  return (await api.post('/accounts/cleanup-orphaned-links')).data;
+};
+
+export const cleanupSelectedOrphanedLinks = async (accountIds: number[]) => {
+  return (await api.post('/accounts/cleanup-orphaned-links-selected', accountIds)).data;
+};
+
+// Auto cleanup settings
+export const getAutoCleanupSettings = async () => {
+  return (await api.get('/accounts/auto-cleanup-settings')).data;
+};
+
+export const updateAutoCleanupSettings = async (enabled: boolean, intervalSeconds: number = 5) => {
+  return (await api.post('/accounts/auto-cleanup-settings', {
+    enabled,
+    interval_seconds: intervalSeconds
+  })).data;
+};

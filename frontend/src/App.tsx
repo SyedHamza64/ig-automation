@@ -5,6 +5,7 @@ import ProfilesPage from "./pages/Profiles";
 import AccountsPage from "./pages/Accounts";
 import ActionsPage from "./pages/Actions";
 import { ToastContainer } from "./components/ui/Toast";
+import { DarkModeProvider } from "./contexts/DarkModeContext";
 
 // (keep Placeholder for other routes if you want)
 const Placeholder = ({ title }: { title: string }) => (
@@ -13,7 +14,7 @@ const Placeholder = ({ title }: { title: string }) => (
 
 export default function App() {
   return (
-    <>
+    <DarkModeProvider>
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<Overview />} />
@@ -27,6 +28,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <ToastContainer />
-    </>
+    </DarkModeProvider>
   );
 }

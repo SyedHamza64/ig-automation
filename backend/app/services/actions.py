@@ -12,7 +12,7 @@ from sqlalchemy import select, and_
 
 from ..models.action_log import ActionLog
 from ..models.account_limit import AccountLimit
-from ..models.profile import Profile
+from ..models.account import Account
 
 import websockets  # make sure 'websockets' is in requirements.txt
 import logging
@@ -46,26 +46,83 @@ def get_account_limits(db: Session, account_id: int) -> Dict[str, Any]:
     return DEFAULT_LIMITS.copy()
 
 
-def ensure_profile_ws(db: Session, profile_id: int) -> str:
+async def ensure_profile_ws(db: Session, profile_id: int) -> str:
     """
-    Pull a usable CDP websocket URL from the profile.
-    Prefers last_ws_puppeteer; falls back to ws_url or ws{puppeteer,selenium}.
+    Pull a usable CDP websocket URL from the account.
+    Since we merged Profile into Account, profile_id is now account_id.
     """
-    profile: Optional[Profile] = db.get(Profile, profile_id)
-    if not profile:
-        raise HTTPException(status_code=404, detail="profile not found")
+    account: Optional[Account] = db.get(Account, profile_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="account not found")
 
-    ws_url = getattr(profile, "last_ws_puppeteer", None)
-    if not ws_url and getattr(profile, "ws_url", None):
-        ws_url = profile.ws_url
-    if not ws_url and getattr(profile, "ws", None):
-        if isinstance(profile.ws, dict):
-            ws_url = profile.ws.get("puppeteer") or profile.ws.get("selenium")
-        elif isinstance(profile.ws, str):
-            ws_url = profile.ws
+    # Check if account has a bulkcreate profile
+    if not account.bulk_profile_name and not account.adspower_profile_id:
+        raise HTTPException(status_code=400, detail="account has no linked profile")
+
+    # For bulkcreate profiles, we need to get the WebSocket URL from the bulkcreate service
+    if account.bulk_profile_name:
+        # Try to get the WebSocket URL from the account's stored values
+        ws_url = getattr(account, "last_ws_puppeteer", None)
+        if not ws_url and getattr(account, "last_ws_selenium", None):
+            ws_url = f"ws://{account.last_ws_selenium}"
+        
+        if not ws_url:
+            # If no stored WebSocket URL, we need to launch the profile automatically
+            from ..services.bulkcreate_client import launch_cdp
+            import asyncio
+            import requests
+            
+            try:
+                # Launch the profile and get the WebSocket URL
+                result = await launch_cdp(account.bulk_profile_name, enhanced=True)
+                ws_url = result.get("ws")
+                if ws_url:
+                    # Store the WebSocket URL for future use
+                    account.last_ws_puppeteer = ws_url
+                    db.add(account)
+                    db.commit()
+                    # Profile auto-launched successfully
+                else:
+                    raise HTTPException(status_code=500, detail=f"Failed to get WebSocket URL from bulkcreate profile '{account.bulk_profile_name}'")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to auto-launch bulkcreate profile '{account.bulk_profile_name}': {str(e)}")
+
+    # For AdsPower profiles (legacy)
+    elif account.adspower_profile_id:
+        ws_url = getattr(account, "last_ws_puppeteer", None)
+        if not ws_url and getattr(account, "last_ws_selenium", None):
+            ws_url = f"ws://{account.last_ws_selenium}"
 
     if not ws_url:
         raise HTTPException(status_code=400, detail="profile has no active websocket url; open it first")
+
+    # Verify the WebSocket URL is still valid by checking if the profile is running
+    try:
+        import requests
+        response = requests.get("http://127.0.0.1:4000/api/profiles", timeout=5)
+        if response.status_code == 200:
+            bulkcreate_profiles = response.json()
+            if account.bulk_profile_name in bulkcreate_profiles:
+                profile_info = bulkcreate_profiles[account.bulk_profile_name]
+                if not profile_info.get("running", False):
+                    # Profile is not running, need to launch it
+                    # Profile is not running, need to launch it
+                    
+                    from ..services.bulkcreate_client import launch_cdp
+                    
+                    result = await launch_cdp(account.bulk_profile_name, enhanced=True)
+                    new_ws_url = result.get("ws")
+                    if new_ws_url:
+                        account.last_ws_puppeteer = new_ws_url
+                        db.add(account)
+                        db.commit()
+                        ws_url = new_ws_url
+                        # Profile re-launched successfully
+                    else:
+                        raise HTTPException(status_code=500, detail=f"Failed to re-launch profile '{account.bulk_profile_name}'")
+    except Exception as e:
+        # Continue with the stored WebSocket URL anyway
+        pass
 
     return ws_url
 
@@ -150,6 +207,14 @@ class CDPClient:
                 raise TimeoutError(f"Timed out waiting for id={wanted_id}")
             assert self._ws is not None
             raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
+            # Handle both string and bytes responses, and coroutine objects
+            if isinstance(raw, bytes):
+                raw = raw.decode('utf-8')
+            elif hasattr(raw, '__await__'):
+                # Handle coroutine objects
+                raw = await raw
+                if isinstance(raw, bytes):
+                    raw = raw.decode('utf-8')
             data = json.loads(raw)
             if isinstance(data, dict) and data.get("id") == wanted_id:
                 if "error" in data:
@@ -165,6 +230,14 @@ class CDPClient:
                 raise TimeoutError(f"Timed out waiting for event {method}")
             assert self._ws is not None
             raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
+            # Handle both string and bytes responses, and coroutine objects
+            if isinstance(raw, bytes):
+                raw = raw.decode('utf-8')
+            elif hasattr(raw, '__await__'):
+                # Handle coroutine objects
+                raw = await raw
+                if isinstance(raw, bytes):
+                    raw = raw.decode('utf-8')
             data = json.loads(raw)
             if data.get("method") == method and data.get("sessionId") == session_id:
                 return data.get("params", {})
@@ -261,729 +334,279 @@ async def perform_follow(ws_url: str, usernames: List[str]) -> Dict[str, Any]:
 async def perform_mass_follow_stream(
     ws_url: str,
     target_username: str,
-    mode: str,  # "follow" | "unfollow"
+    mode: str,                  # "follow" | "unfollow"
     limit: int = 50,
     percent: int | None = None,
-    max_scrolls: int = 200,
-    section: str = "followers",  # "followers" | "following"
+    max_scrolls: int = 120,     # allow more scrolling before declaring bottom
+    section: str = "followers", # "followers" | "following"
     debug_dom: bool = False,
+    max_duration_minutes: int = 10,
 ):
     """
-    Navigate to target profile → open followers/following modal → iterate visible rows,
-    clicking as appropriate and scrolling to reveal more, yielding progress events.
+    Robust mass follow/unfollow inside Followers/Following modal.
+    - Adaptive scrolling (burst -> page -> sentinel) until real bottom.
+    - Only counts an action after verifying state change.
+    - Avoids re-clicking the same row by marking after verified result.
     """
     assert mode in ("follow", "unfollow")
+    assert section in ("followers", "following")
 
-    # JS helpers we will reuse inside the modal
-    JS_OPEN_TAB_TMPL = """
-    (function(){
-      var section = '%s';
-      // section: 'followers' or 'following'
-      const linkSel = section === 'followers' ? 'a[href$="/followers/"]' : 'a[href$="/following/"]';
-      const a = document.querySelector(linkSel);
-      if(!a) return {ok:false, error:'tab-link-not-found', linkSel};
-      a.click();
-      return {ok:true, linkSel};
-    })();
-    """
-
-    JS_GET_MODAL_ROWS = r"""
-    (function(){
-      const modal = document.querySelector('div[role="dialog"]');
-      if(!modal) return {rows: [], totalCount: null, haveScroller: false};
-      
-      const section = '%s'; // 'followers' or 'following'
-      
-      // Find scrollable container - try multiple selectors
-      let scroller = modal.querySelector('div._aano') || 
-                    modal.querySelector('div[style*="overflow"]') ||
-                    modal.querySelector('div[style*="max-height"]') ||
-                    modal.querySelector('div.xdj266r');
-      
-      // Get all potential list items - Instagram uses complex div structures
-      const listSelectors = [
-        'div._ac7b',  // Primary Instagram list item class
-        'div.x1rg5ohu',  // Alternative list item container
-        'div[class*="_ac7"]',  // Any _ac7* class
-        'div[class*="x1rg"]',  // x1rg* classes
-        'div[class*="html-div"]',  // HTML div containers
-      ];
-      
-      let allItems = [];
-      for(const sel of listSelectors) {
-        try {
-          const items = Array.from(modal.querySelectorAll(sel));
-          allItems = allItems.concat(items);
-        } catch(e) {
-          // Invalid selector, skip
-        }
-      }
-      
-      // Remove duplicates and filter valid list items
-      allItems = [...new Set(allItems)].filter(item => {
-        const text = (item.textContent || '').trim();
-        const hasLink = item.querySelector('a[href^="/"]') !== null;
-        // Keep items that have reasonable content and a link
-        return text.length > 0 && text.length < 200 && hasLink;
-      });
-      
-      // Also get all buttons to match with usernames
-      const allButtons = Array.from(modal.querySelectorAll('button')).filter(btn => {
-        const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-        return text === 'follow' || text.includes('follow') || text === 'following' || text.includes('following');
-      });
-      
-      const rows = [];
-      for(const item of allItems){
-        let username = null;
-        
-        // Try to extract username from href attribute first
-        const a = item.querySelector('a[href^="/"][href$="/"]');
-        if(a){
-          const href = a.getAttribute('href')||'';
-          const m = href.match(/^\/([^/]+)\/$/);
-          if(m) username = m[1];
-        }
-        
-        // Fallback: try to extract from span with _ap3a classnom,
-        if(!username){
-          const nameSpan = item.querySelector('span._ap3a');
-          if(nameSpan) {
-            const text = (nameSpan.textContent||'').trim();
-            // Clean up text (remove @ symbol if present)
-            username = text.replace(/^@/, '');
-          }
-        }
-        
-        // Another fallback: try any span with username-like text
-        if(!username){
-          const spans = item.querySelectorAll('span');
-          for(const span of spans) {
-            const text = (span.textContent||'').trim();
-            if(text && text.length > 2 && text.length < 50 && /^[a-zA-Z0-9._]+$/.test(text)) {
-              username = text;
-              break;
-            }
-          }
-        }
-        
-        if(!username) continue;
-        
-        // Find associated button - try multiple approaches
-        let btn = null;
-        let state = 'unknown';
-        
-        // Method 1: Look for button in the same container
-        btn = item.querySelector('button');
-        
-        // Method 2: Look for button in parent containers
-        if(!btn) {
-          let parent = item.parentElement;
-          while(parent && parent !== modal) {
-            btn = parent.querySelector('button');
-            if(btn) break;
-            parent = parent.parentElement;
-          }
-        }
-        
-        // Method 3: Look for button in siblings (same level containers)
-        if(!btn) {
-          const parent = item.parentElement;
-          if(parent) {
-            const siblings = Array.from(parent.children);
-            for(const sibling of siblings) {
-              btn = sibling.querySelector('button');
-              if(btn) break;
-            }
-          }
-        }
-        
-        // Method 4: Find button by proximity (closest button)
-        if(!btn && allButtons.length > 0) {
-          // Find the closest button to this item
-          let minDistance = Infinity;
-          for(const button of allButtons) {
-            const rect1 = item.getBoundingClientRect();
-            const rect2 = button.getBoundingClientRect();
-            const distance = Math.abs(rect1.top - rect2.top) + Math.abs(rect1.left - rect2.left);
-            if(distance < minDistance) {
-              minDistance = distance;
-              btn = button;
-            }
-          }
-        }
-        
-        // Determine button state
-        if(btn) {
-          const label = (btn.innerText || btn.textContent || btn.getAttribute('aria-label') || '').trim().toLowerCase();
-          if(label.includes('following') || label.includes('requested')) {
-            state = 'following';
-          } else if(label.includes('follow')) {
-            state = 'follow';
-          }
-        }
-        
-        rows.push({ username, state });
-      }
-      
-      // Get total count from followers/following badge
-      const badgeSel = document.querySelector('a[href$="/' + section + '/"] span');
-      const totalCount = badgeSel ? parseInt((badgeSel.textContent||'').replace(/[,\.]/g,''))||null : null;
-      
-      return { rows, totalCount, haveScroller: !!scroller };
-    })();
-    """
-
-    JS_DEBUG_DOM = r"""
-    (function(){
-      const modal = document.querySelector('div[role="dialog"]');
-      if(!modal) return {error: 'no-modal'};
-      
-      const result = {
-        modalFound: true,
-        modalClasses: modal.className,
-        modalId: modal.id,
-        allLis: [],
-        allButtons: [],
-        allLinks: [],
-        allSpans: [],
-        allDivs: [],
-        debugInfo: {
-          totalLis: modal.querySelectorAll('li').length,
-          totalButtons: modal.querySelectorAll('button').length,
-          totalLinks: modal.querySelectorAll('a').length,
-          totalSpans: modal.querySelectorAll('span').length,
-          modalHTML: modal.innerHTML.substring(0, 1000) // first 1000 chars
-        }
-      };
-      
-      // Try multiple selectors for list items
-      const selectors = [
-        'li', 
-        'div[role="row"]', 
-        'div[data-testid]', 
-        'div._ac7b',  // Instagram follower list items
-        'div._ac7c',  // Alternative Instagram list item class
-        'div[class*="_ac7"]',  // Any class starting with _ac7
-        'div[class*="x1"]',   // Instagram's x1* classes
-        'div[class*="x2"]',   // Instagram's x2* classes
-        'div[class*="x3"]',   // Instagram's x3* classes
-        'div[class*="x4"]',   // Instagram's x4* classes
-        'div[class*="x5"]',   // Instagram's x5* classes
-        'div[class*="x6"]',   // Instagram's x6* classes
-        'div[class*="x7"]',   // Instagram's x7* classes
-        'div[class*="x8"]',   // Instagram's x8* classes
-        'div[class*="x9"]',   // Instagram's x9* classes
-        'div[class*="xa"]',   // Instagram's xa* classes
-        'div[class*="xb"]',   // Instagram's xb* classes
-        'div[class*="xc"]',   // Instagram's xc* classes
-        'div[class*="xd"]',   // Instagram's xd* classes
-        'div[class*="xe"]',   // Instagram's xe* classes
-        'div[class*="xf"]',   // Instagram's xf* classes
-        'div[class*="x1"]',   // Instagram's x1* classes
-      ];
-      let allElements = [];
-      
-      for(const sel of selectors) {
-        try {
-          const elements = Array.from(modal.querySelectorAll(sel));
-          allElements = allElements.concat(elements);
-        } catch(e) {
-          // selector might be invalid, skip
-        }
-      }
-      
-      // Remove duplicates
-      allElements = [...new Set(allElements)];
-      
-      // Filter out elements that are too nested (likely containers, not list items)
-      allElements = allElements.filter(el => {
-        const depth = el.querySelectorAll('*').length;
-        const textLength = (el.textContent || '').trim().length;
-        // Keep elements that have reasonable text content and aren't too deeply nested
-        return textLength > 0 && textLength < 200 && depth < 10;
-      });
-      
-      // Get detailed info for first 10 elements
-      for(let i = 0; i < Math.min(allElements.length, 10); i++) {
-        const el = allElements[i];
-        const elInfo = {
-          index: i,
-          tagName: el.tagName,
-          classes: el.className,
-          id: el.id,
-          role: el.getAttribute('role'),
-          innerHTML: el.innerHTML.substring(0, 300),
-          textContent: el.textContent.substring(0, 100)
-        };
-        result.allLis.push(elInfo);
-        
-        // Get buttons in this element
-        const buttons = Array.from(el.querySelectorAll('button, div[role="button"]'));
-        for(const btn of buttons) {
-          result.allButtons.push({
-            elIndex: i,
-            text: btn.innerText,
-            classes: btn.className,
-            ariaLabel: btn.getAttribute('aria-label'),
-            type: btn.tagName
-          });
-        }
-        
-        // Get links in this element
-        const links = Array.from(el.querySelectorAll('a'));
-        for(const link of links) {
-          result.allLinks.push({
-            elIndex: i,
-            href: link.getAttribute('href'),
-            text: link.innerText,
-            classes: link.className
-          });
-        }
-        
-        // Get spans in this element
-        const spans = Array.from(el.querySelectorAll('span'));
-        for(const span of spans) {
-          result.allSpans.push({
-            elIndex: i,
-            text: span.innerText,
-            classes: span.className,
-            parentTag: span.parentElement?.tagName
-          });
-        }
-      }
-      
-      return result;
-    })();
-    """
-
-    JS_CLICK_ROW_TMPL = """
-    (function(){
-      var target = '%s';
-      const modal = document.querySelector('div[role="dialog"]');
-      if(!modal) return {ok:false, error:'no-modal'};
-      
-      // Find the target username in any of the Instagram div containers
-      const listSelectors = [
-        'div._ac7b',  // Primary Instagram list item class
-        'div.x1rg5ohu',  // Alternative list item container
-        'div[class*="_ac7"]',  // Any _ac7* class
-        'div[class*="x1rg"]',  // x1rg* classes
-        'div[class*="html-div"]',  // HTML div containers
-      ];
-      
-      let allItems = [];
-      for(const sel of listSelectors) {
-        try {
-          const items = Array.from(modal.querySelectorAll(sel));
-          allItems = allItems.concat(items);
-        } catch(e) {
-          // Invalid selector, skip
-        }
-      }
-      
-      // Remove duplicates and filter valid items
-      allItems = [...new Set(allItems)].filter(item => {
-        const text = (item.textContent || '').trim();
-        const hasLink = item.querySelector('a[href^="/"]') !== null;
-        return text.length > 0 && text.length < 200 && hasLink;
-      });
-      
-      // Look for the target username
-      for(const item of allItems){
-        let username = null;
-        
-        // Try to extract username from href attribute first
-        const a = item.querySelector('a[href^="/"][href$="/"]');
-        if(a){
-          const href = a.getAttribute('href')||'';
-          const m = href.match(/^\/([^/]+)\/$/);
-          if(m) username = m[1];
-        }
-        
-        // Fallback: try to extract from span with _ap3a class
-        if(!username){
-          const nameSpan = item.querySelector('span._ap3a');
-          if(nameSpan) {
-            const text = (nameSpan.textContent||'').trim();
-            username = text.replace(/^@/, '');
-          }
-        }
-        
-        // Check if this is our target username
-        if(username === target){
-          // Find the associated button
-          let btn = item.querySelector('button');
-          
-          // If no button in current item, look in parent or sibling containers
-          if(!btn) {
-            let parent = item.parentElement;
-            while(parent && parent !== modal) {
-              btn = parent.querySelector('button');
-              if(btn) break;
-              parent = parent.parentElement;
-            }
-          }
-          
-          // If still no button, look in siblings
-          if(!btn) {
-            const parent = item.parentElement;
-            if(parent) {
-              const siblings = Array.from(parent.children);
-              for(const sibling of siblings) {
-                btn = sibling.querySelector('button');
-                if(btn) break;
-              }
-            }
-          }
-          
-          if(!btn) return {ok:false, error:'button-not-found'};
-          
-          // Check if button is a follow button
-          const btnText = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-          if(!btnText.includes('follow')) {
-            return {ok:false, error:'not-follow-button', buttonText: btnText};
-          }
-          
-          btn.click();
-          return {ok:true, buttonText: btnText};
-        }
-      }
-      return {ok:false, error:'row-not-found'};
-    })();
-    """
-
-    JS_HANDLE_CONFIRM = r"""
-    (function(){
-      // handle small confirm modal after unfollow
-      const confirm = Array.from(document.querySelectorAll('button'))
-        .find(b => /unfollow/i.test(b.innerText||''));
-      if(confirm){ confirm.click(); return {clicked:true}; }
-      return {clicked:false};
-    })();
-    """
-
-    JS_SCROLL_MODAL = r"""
-    (function(){
-      const modal = document.querySelector('div[role="dialog"]');
-      if(!modal) return {ok:false, reason:'no-modal'};
-      
-      // Find the scrollable container - try multiple selectors
-      let scroller = modal.querySelector('div._aano') || 
-                    modal.querySelector('div[style*="overflow"]') ||
-                    modal.querySelector('div[style*="max-height"]') ||
-                    modal.querySelector('div.xdj266r') ||
-                    modal.querySelector('div[style*="height: 100%"]') ||
-                    modal.querySelector('div[class*="xdj266r"]') ||
-                    modal.querySelector('div[class*="x14z9mp"]');
-      
-      // If no specific scroller found, try the modal itself or its children
-      if(!scroller) {
-        scroller = modal.querySelector('div') || modal;
-      }
-      
-      const before = scroller.scrollTop || 0;
-      const scrollHeight = scroller.scrollHeight || 0;
-      const clientHeight = scroller.clientHeight || 0;
-      const modalHeight = modal.offsetHeight || 0;
-      const modalWidth = modal.offsetWidth || 0;
-      
-      // Try multiple scroll methods
-      let scrolled = false;
-      
-      // Method 1: Very gentle scrollTop manipulation
-      try {
-        scroller.scrollTop = before + 50; // Slightly increased for better visibility
-        if(scroller.scrollTop > before) scrolled = true;
-      } catch(e) {
-        // Ignore errors
-      }
-      
-      // Method 2: ScrollIntoView on visible elements (gentle)
-      if(!scrolled) {
-        try {
-          const visibleItems = modal.querySelectorAll('div._ac7b, div.x1rg5ohu');
-          if(visibleItems.length > 0) {
-            const lastItem = visibleItems[visibleItems.length - 1];
-            lastItem.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-            scrolled = true;
-          }
-        } catch(e) {
-          // Ignore errors
-        }
-      }
-      
-      // Method 3: Gentle wheel events with randomization
-      if(!scrolled) {
-        try {
-          const delta = 40 + Math.floor(Math.random()*80); // 40-120
-          const wheel = new WheelEvent('wheel', {
-            deltaY: delta,
-            deltaMode: 0,
-            bubbles: true,
-            cancelable: true
-          });
-          scroller.dispatchEvent(wheel);
-          scrolled = true;
-        } catch(e) {
-          // Ignore errors
-        }
-      }
-      
-      // Method 4: Window scroll as fallback (gentle)
-      if(!scrolled) {
-        try {
-          window.scrollBy(0, 50); // Reduced for gentler scrolling
-          scrolled = true;
-        } catch(e) {
-          // Ignore errors
-        }
-      }
-      
-      // Small random delay to humanize
-      try { const d = 100 + Math.floor(Math.random()*250); const t0 = performance.now(); while(performance.now()-t0 < d){} } catch(e){}
-
-      const after = scroller.scrollTop || 0;
-      
-      return {
-        ok: scrolled || (after > before),
-        before,
-        after,
-        scrolled: after > before,
-        scrollHeight,
-        clientHeight,
-        modalHeight,
-        modalWidth,
-        canScroll: scrollHeight > clientHeight,
-        scrollerFound: !!scroller,
-        method: scrolled ? 'success' : 'failed',
-        scrollerTag: scroller.tagName,
-        scrollerClasses: scroller.className,
-        debug: {
-          beforeScroll: before,
-          afterScroll: after,
-          scrollDelta: after - before,
-          scrollHeight: scrollHeight,
-          clientHeight: clientHeight,
-          modalHeight: modalHeight,
-          modalWidth: modalWidth,
-          hasScrollableContent: scrollHeight > clientHeight,
-          scrollPosition: Math.round((after / Math.max(scrollHeight - clientHeight, 1)) * 100) + '%'
-        }
-      };
-    })();
-    """
-
-    JS_LIST_FOLLOWABLE = r"""
-    (function(){
-      const modal = document.querySelector('div[role="dialog"]');
-      if(!modal) return {items: []};
-      
-      // Find all Follow buttons
-      const buttons = Array.from(modal.querySelectorAll('button'));
-      const items = [];
-      
-      for(const btn of buttons){
-        const btnText = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-        if(btnText === 'follow' || btnText.includes('follow')){
-          // Find the parent container (Instagram uses div, not li)
-          const container = btn.closest('div._ac7b') || 
-                           btn.closest('div.x1rg5ohu') || 
-                           btn.closest('div[class*="_ac7"]') ||
-                           btn.closest('div[class*="x1rg"]') ||
-                           btn.parentElement;
-          
-          let username = null;
-          
-          // Try to extract username from href
-          if(container) {
-            const a = container.querySelector('a[href^="/"][href$="/"]');
-            if(a) {
-              const href = a.getAttribute('href') || '';
-              const m = href.match(/^\/([^/]+)\/$/);
-              if(m) username = m[1];
-            }
-          }
-          
-          // Fallback: try to extract from span with _ap3a class
-          if(!username && container) {
-            const nameSpan = container.querySelector('span._ap3a');
-            if(nameSpan) {
-              const text = (nameSpan.textContent || '').trim();
-              username = text.replace(/^@/, '');
-            }
-          }
-          
-          // Another fallback: try any span with username-like text
-          if(!username && container) {
-            const spans = container.querySelectorAll('span');
-            for(const span of spans) {
-              const text = (span.textContent || '').trim();
-              if(text && text.length > 2 && text.length < 50 && /^[a-zA-Z0-9._]+$/.test(text)) {
-                username = text;
-                break;
-              }
-            }
-          }
-          
-          items.push({ username, buttonFound: true, buttonText: btnText });
-        }
-      }
-      return { items };
-    })();
-    """
-
-    JS_CLICK_FIRST_FOLLOW = r"""
-    (function(){
-      const modal = document.querySelector('div[role="dialog"]');
-      if(!modal) return {clicked:false, error:'no-modal'};
-      
-      const buttons = Array.from(modal.querySelectorAll('button'));
-      
-      for(const btn of buttons){
-        const btnText = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-        if(btnText === 'follow' || btnText.includes('follow')){
-          try { 
-            btn.click(); 
-            return {clicked:true, buttonText: btnText}; 
-          } catch(e){ 
-            return {clicked:false, error: String(e)}; 
-          }
-        }
-      }
-      return {clicked:false, error:'no-follow-button'};
-    })();
-    """
-
-    acted = 0
-    processed: set[str] = set()
-    est_total = None
-    scrolls = 0
+    from .actions import CDPClient
 
     async with CDPClient(ws_url) as cdp:
-      sid = await cdp.get_page_session()
-      await cdp.goto(sid, f"https://www.instagram.com/{target_username}/", wait="domcontent")
-      await asyncio.sleep(0.8)
+        sid = await cdp.get_page_session()
 
-      # Open appropriate tab
-      _ = await cdp.eval(sid, JS_OPEN_TAB_TMPL % section)
-      await asyncio.sleep(1.2)
+        # 1) Go to profile
+        await cdp.goto(sid, f"https://www.instagram.com/{target_username}/", wait="domcontent")
+        await asyncio.sleep(1.0)
 
-      # Debug DOM structure if requested
-      if debug_dom:
-        # Wait longer for modal content to load
-        await asyncio.sleep(3)
-        dom_info = await cdp.eval(sid, JS_DEBUG_DOM)
-        yield {"type": "debug_dom", "dom_info": dom_info}
-        return
-
-      while True:
-        meta = await cdp.eval(sid, JS_GET_MODAL_ROWS % section)
-        rows = meta.get("rows") or []
-        if est_total is None:
-          est_total = meta.get("totalCount")
-        
-        # Yield current snapshot
-        yield {"type": "progress", "processed": len(processed), "acted": acted, "total": est_total}
-
-        # Process visible rows
-        processed_count = 0
-        yield {"type": "debug", "message": f"Processing {len(rows)} rows, total_processed_before={len(processed)}"}
-        for r in rows:
-          # Stop early if we've already met the limit
-          if limit and acted >= limit:
-            yield {"type": "done", "reason": "limit"}
+        # 2) Open modal (href first, then header chip text)
+        open_modal_js = f"""
+        (function(){{
+          const sec = "{section}";
+          const u = "{target_username}".replace(/^@/,'').toLowerCase();
+          const hrefNeedle = "/" + u + "/" + (sec==="followers" ? "followers/" : "following/");
+          let link = Array.from(document.querySelectorAll('a[href]'))
+              .find(a => (a.getAttribute('href')||'').toLowerCase().includes(hrefNeedle));
+          if(!link){{
+            const scope = document.querySelector('header') || document;
+            link = Array.from(scope.querySelectorAll('a,button,span,div'))
+              .find(n => {{
+                 const t = ((n.innerText||n.textContent)||"").toLowerCase();
+                 return (sec==='followers'?/\\bfollowers\\b/:/\\bfollowing\\b/).test(t);
+              }});
+            if(link) link = link.closest('a,button,[role="link"]') || link;
+          }}
+          if(!link) return {{ok:false, reason:"link-not-found"}};
+          try{{ link.scrollIntoView({{block:'center'}}); }}catch(e){{}}
+          try{{ link.click(); }}catch(e){{ return {{ok:false, reason:"click-failed:"+e}}; }}
+          return {{ok:true}};
+        }})();
+        """
+        opened = await cdp.eval(sid, open_modal_js)
+        if not (isinstance(opened, dict) and opened.get("ok")):
+            yield {"type":"done","reason":"modal_open_failed","detail":opened}
             return
-          username = r.get("username")
-          if not username or username in processed:
-            continue
-          processed.add(username)
-          processed_count += 1
-          state = r.get("state") or "unknown"
+        await asyncio.sleep(1.0)
 
-          do_click = False
-          if mode == "follow" and state == "follow":
-            do_click = True
-          if mode == "unfollow" and state == "following":
-            do_click = True
-          
-          if do_click:
-            # Use the improved click function that actually verifies the click
-            click_result = await cdp.eval(sid, JS_CLICK_ROW_TMPL % username)
-            await asyncio.sleep(0.5)
-            
-            # Verify the click was successful
-            if isinstance(click_result, dict) and click_result.get("ok"):
-              if mode == "unfollow":
-                _ = await cdp.eval(sid, JS_HANDLE_CONFIRM)
-                await asyncio.sleep(0.3)
-              acted += 1
-              yield {"type": "row", "username": username, "action": mode, "status": "clicked"}
-              # Human-like delay after each successful action
-              try:
-                import random as _rnd  # avoid top-level import conflicts
-                await asyncio.sleep(2.5 + _rnd.random() * 1.5)
-              except Exception:
-                pass
-              if limit and acted >= limit:
-                yield {"type": "done", "reason": "limit"}
-                return
-            else:
-              yield {"type": "row", "username": username, "action": mode, "status": "click_failed", "error": click_result}
-          else:
-            yield {"type": "row", "username": username, "action": mode, "status": "skipped", "state": state}
+        # 3) Wire helpers in the page
+        helpers = r"""
+    (function(){
+      const modal = document.querySelector('div[role="dialog"]');
+          if(!modal) return {ok:false, reason:'no-modal'};
 
-          # Scroll after every 5 users processed (within the same iteration)
-          if processed_count % 5 == 0:
-            scroll_result = await cdp.eval(sid, JS_SCROLL_MODAL)
-            await asyncio.sleep(0.8)  # Wait for new content to load
-            yield {"type": "scroll", "processed": len(processed), "acted": acted, "processed_count": processed_count, "scroll_result": scroll_result}
+          // Best guess scroll container (tallest scrollable descendant)
+          const cand = [modal, ...modal.querySelectorAll('div,section,ul')];
+          let sc=null, score=-1;
+          for(const el of cand){
+            const cs=getComputedStyle(el), sh=el.scrollHeight|0, ch=el.clientHeight|0;
+            const scr=(cs.overflowY==='auto'||cs.overflowY==='scroll'||cs.overflow==='auto');
+            const s=(scr?1:0)*1e7 + (sh-ch);
+            if(sh>ch+10 && s>score){ sc=el; score=s; }
+          }
+          sc = sc || modal;
 
-        # Always scroll after processing users to trigger loading more content
-        if processed_count > 0:
-          scroll_result = await cdp.eval(sid, JS_SCROLL_MODAL)
-          await asyncio.sleep(0.8)  # Wait for new content to load
-          yield {"type": "scroll", "processed": len(processed), "acted": acted, "processed_count": processed_count, "rows_in_iteration": len(rows), "scroll_result": scroll_result}
-        elif len(processed) > 0:
-          # Scroll even if no new users processed this iteration, but we have processed users before
-          scroll_result = await cdp.eval(sid, JS_SCROLL_MODAL)
-          await asyncio.sleep(0.8)  # Wait for new content to load
-          yield {"type": "scroll", "processed": len(processed), "acted": acted, "processed_count": processed_count, "rows_in_iteration": len(rows), "reason": "no_new_users", "scroll_result": scroll_result}
-        else:
-          yield {"type": "debug", "message": f"No scroll: processed_count={processed_count}, rows={len(rows)}, total_processed={len(processed)}"}
+          // save globals
+          window.__IG_MODAL__ = modal;
+          window.__IG_SC__ = sc;
+          window.__IG_LAST_SH__ = sc.scrollHeight|0;
+          window.__IG_LAST_TOP__ = sc.scrollTop|0;
+          window.__IG_STALLS__ = 0;
 
-        # Only check limit against actual follows/unfollows, not total processed
-        if limit and acted >= limit:
-          yield {"type": "done", "reason": "limit"}
-          return
+          // Util: visible within the window (not just sc viewport)
+          const within = (el)=>{
+            const r=el.getBoundingClientRect();
+            const h=(innerHeight||document.documentElement.clientHeight);
+            return r.top>80 && r.bottom<h-80;
+          };
 
-        if percent and est_total:
-          if len(processed) >= int((percent/100.0) * est_total):
-            yield {"type": "done", "reason": "percent"}
+          // Gather candidates (unprocessed)
+          window.__IG_GATHER__ = function(mode,max=10){
+            const root = window.__IG_MODAL__ || document;
+            const rows = Array.from(root.querySelectorAll('li, div[role], div'));
+            const out=[];
+            for(const r of rows){
+              if(r.dataset.igDone==='1') continue;
+              const btn = r.querySelector('button'); if(!btn) continue;
+              const label=(btn.innerText||btn.textContent||'').trim().toLowerCase();
+              if(mode==='follow' && label==='follow' && within(r)) out.push({row:r,btn,kind:'follow'});
+              if(mode==='unfollow' && (label==='following'||label==='requested') && within(r)) out.push({row:r,btn,kind:'unfollow'});
+              if(out.length>=max) break;
+            }
+            return {count:out.length};
+          };
+
+          // Click next candidate (store reference internally; return primitives only)
+          window.__IG_CLICK_NEXT__ = function(mode){
+            const root = window.__IG_MODAL__ || document;
+            const rows = Array.from(root.querySelectorAll('li, div[role], div'));
+            for(let i=0; i<rows.length; i++){
+              const r = rows[i];
+              if(r.dataset.igDone==='1') continue;
+              const btn = r.querySelector('button'); if(!btn) continue;
+              const label=(btn.innerText||btn.textContent||'').trim().toLowerCase();
+              if(mode==='follow' && (label==='follow' || label==='follow back')){
+                try{ r.scrollIntoView({block:'center'}); btn.click(); window.__lastRowClicked = r; return {ok:true, idx:i}; }catch(e){ return {ok:false, reason:String(e)} }
+              }
+              if(mode==='unfollow' && (label==='following'||label==='requested')){
+                try{ r.scrollIntoView({block:'center'}); btn.click(); window.__lastRowClicked = r; return {ok:true, idx:i, unfollow:true}; }catch(e){ return {ok:false, reason:String(e)} }
+              }
+            }
+            return {ok:false, reason:'no-visible-candidate'};
+          };
+
+          // Verify row state change; mark row as done on success
+          window.__IG_VERIFY_ROW__ = function(row, mode){
+            // Accept explicit row or use last clicked
+            row = row || window.__lastRowClicked || null;
+            if(!row) return {ok:false, reason:'no-row'};
+            const btn = row.querySelector('button'); if(!btn) return {ok:false, reason:'no-btn'};
+            const label=(btn.innerText||btn.textContent||'').trim().toLowerCase();
+            if(mode==='follow'){
+              if(label!=='follow'){ row.dataset.igDone='1'; return {ok:true, changed:true}; }
+              return {ok:false, changed:false};
+            }else{
+              // after clicking "Following/Requested", a confirm dialog may appear
+              // If button text changed away from "following"/"requested", consider done.
+              if(label!=='following' && label!=='requested'){ row.dataset.igDone='1'; return {ok:true, changed:true}; }
+              return {ok:false, changed:false};
+            }
+          };
+
+          // Confirm unfollow in popup/menu if present
+          window.__IG_CONFIRM_UNFOLLOW__ = function(){
+            const roots=[...document.querySelectorAll('[role="dialog"],[role="menu"]'), document.body];
+            for(const r of roots){
+              const b = Array.from(r.querySelectorAll('button,[role="button"],a'))
+                      .find(x => /unfollow/i.test((x.innerText||x.textContent||'')));
+              if(b){ try{ b.click(); return {ok:true}; }catch(e){ return {ok:false, reason:String(e)} } }
+            }
+            return {ok:false, reason:'not-found'};
+          };
+
+          // Scroll strategies
+          window.__IG_SCROLL_ADV__ = function(strategy){
+            const sc = window.__IG_SC__; if(!sc) return {ok:false};
+            const beforeTop=sc.scrollTop|0, beforeSH=sc.scrollHeight|0;
+
+            if(strategy==='burst'){
+              for(let i=0;i<5;i++){
+                const dy = 180 + Math.floor(Math.random()*180);
+                try{ sc.dispatchEvent(new WheelEvent('wheel',{deltaY:dy,bubbles:true,cancelable:true})); }
+                catch(e){ sc.scrollTop = sc.scrollTop + dy; }
+              }
+            }else if(strategy==='page'){
+              sc.scrollTop = sc.scrollTop + Math.floor(sc.clientHeight*0.85);
+            }else{ // sentinel
+              const rows = sc.querySelectorAll('li, div[role], div');
+              const last = rows[rows.length-1];
+              if(last){ try{ last.scrollIntoView({block:'end'});}catch(e){} }
+              sc.scrollTop = sc.scrollHeight; // push to hard bottom of current page
+            }
+
+            const afterTop=sc.scrollTop|0, afterSH=sc.scrollHeight|0;
+            const grew = afterSH > beforeSH + 5;
+            const moved = afterTop > beforeTop + 20;
+
+            if(grew || moved){ window.__IG_STALLS__ = 0; }
+            else{ window.__IG_STALLS__ = (window.__IG_STALLS__|0) + 1; }
+
+            window.__IG_LAST_SH__ = afterSH;
+            window.__IG_LAST_TOP__ = afterTop;
+
+            const atBottom = (afterTop + sc.clientHeight + 2 >= afterSH);
+            return {ok:true, grew, moved, atBottom, stalls:window.__IG_STALLS__|0, top:afterTop, sh:afterSH};
+          };
+
+          return {ok:true, ch:sc.clientHeight|0, sh:sc.scrollHeight|0};
+    })();
+    """
+        wired = await cdp.eval(sid, helpers)
+        if not (isinstance(wired, dict) and wired.get("ok")):
+            yield {"type":"done","reason":"modal_setup_failed","detail":wired}
             return
 
-        # Keep scrolling until we reach the limit of actual follows
-        if limit and acted < limit:
-          # Continue scrolling to find more users to follow
-          scrolls += 1
-          if max_scrolls and scrolls >= max_scrolls:
-            yield {"type": "done", "reason": "max_scrolls", "message": f"Reached max scrolls ({max_scrolls}) but only followed {acted} users (target: {limit})"}
-            return
-          
-          # Always scroll to try to load more content
-          scroll_result = await cdp.eval(sid, JS_SCROLL_MODAL)
-          try:
-            import random as _rnd2
-            await asyncio.sleep(1.3 + _rnd2.random() * 0.9)
-          except Exception:
-            pass
-          if scrolls == 1:
-            yield {"type": "initial_scroll", "scroll_result": scroll_result}
-          else:
-            yield {"type": "continue_scroll", "scroll_number": scrolls, "acted": acted, "target": limit, "scroll_result": scroll_result}
-        elif limit and acted >= limit:
-          yield {"type": "done", "reason": "limit", "message": f"Successfully followed {acted} users (target: {limit})"}
-          return
+        # 4) Limits & timers
+        acted = 0
+        processed = 0
+        scrolls = 0
+        misses = 0
+        start = asyncio.get_event_loop().time()
+        deadline = start + max_duration_minutes*60
+        if percent is not None:
+            limit = max(1, int(limit * (percent/100)))
+
+        yield {"type":"start","section":section,"mode":mode,"limit":limit}
+
+        # 5) Main loop
+        while acted < limit and scrolls < max_scrolls and asyncio.get_event_loop().time() < deadline:
+            # gather visible candidates; if few, scroll pre-emptively
+            vis = await cdp.eval(sid, f"(function(){{return window.__IG_GATHER__('{mode}',8);}})();")
+            if isinstance(vis, dict) and vis.get("count", 0) < 2:
+                s1 = await cdp.eval(sid, "(function(){return window.__IG_SCROLL_ADV__('burst');})();")
+                scrolls += 1
+                yield {"type":"scroll","strategy":"burst","count":scrolls,"detail":s1}
+                await asyncio.sleep(0.35 + random.random()*0.35)
+
+            # try click next candidate
+            click = await cdp.eval(sid, f"(function(){{return window.__IG_CLICK_NEXT__('{mode}');}})();")
+            processed += 1
+
+            if isinstance(click, dict) and click.get("ok"):
+                # for unfollow, confirm if needed
+                if click.get("unfollow"):
+                    await asyncio.sleep(0.25 + random.random()*0.35)
+                    _ = await cdp.eval(sid, "(function(){return window.__IG_CONFIRM_UNFOLLOW__();})();")
+                    await asyncio.sleep(0.15 + random.random()*0.25)
+
+                # verify state change (don’t mark success unless button changed)
+                ver = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(arguments[0], '{mode}');}})();")  # some CDP clients allow arguments; if not, inlined below
+                # If your CDP eval doesn't support args, replace with inline verification:
+                ver = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(window.__lastRowClicked, '{mode}');}})();") if ver is None else ver  # keep compatibility
+
+                if isinstance(ver, dict) and ver.get("ok") and ver.get("changed"):
+                    acted += 1
+                    misses = 0
+                    yield {"type":"action","mode":mode,"acted":acted,"processed":processed}
+                    await asyncio.sleep(0.85 + random.random()*1.1)
+                else:
+                    # not changed yet → small wait, re-verify once
+                    await asyncio.sleep(0.4 + random.random()*0.4)
+                    ver2 = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(document.activeElement && document.activeElement.closest('li,div[role],div'), '{mode}');}})();")
+                    if isinstance(ver2, dict) and ver2.get("ok") and ver2.get("changed"):
+                        acted += 1
+                        misses = 0
+                        yield {"type":"action","mode":mode,"acted":acted,"processed":processed}
+                        await asyncio.sleep(0.8 + random.random()*0.9)
+                    else:
+                        # no change → we'll need more candidates; count as miss
+                        misses += 1
+                continue
+
+            # no visible candidate → escalate scrolling strategy
+            misses += 1
+            strategy = "page" if (misses % 3 == 0) else ("sentinel" if (misses % 6 == 0) else "burst")
+            s2 = await cdp.eval(sid, f"(function(){{return window.__IG_SCROLL_ADV__('{strategy}');}})();")
+            scrolls += 1
+            yield {"type":"scroll","strategy":strategy,"count":scrolls,"detail":s2}
+            await asyncio.sleep(0.45 + random.random()*0.55)
+
+            # truly at bottom only if:
+            # - we're visually at bottom, and
+            # - we've done multiple escalations with no growth
+            if isinstance(s2, dict) and s2.get("atBottom") and s2.get("stalls", 0) >= 8:
+                yield {"type":"done","reason":"bottom_reached","acted":acted,"processed":processed,"scrolls":scrolls}
+                break
+
+            # occasional dwell
+            if random.random() < 0.15:
+                d = 1.0 + random.random()*2.0
+                await asyncio.sleep(d)
+                yield {"type":"dwell","sec":round(d,2)}
+
+        reason = "limit" if acted >= limit else ("scrolls" if scrolls >= max_scrolls else ("time" if asyncio.get_event_loop().time() >= deadline else "complete"))
+        yield {"type":"done","reason":reason,"acted":acted,"processed":processed,"scrolls":scrolls}
+
 
 async def perform_unfollow(ws_url: str, usernames: List[str]) -> Dict[str, Any]:
     """
@@ -1372,7 +995,7 @@ async def run_action(db: Session, action_type: str, account_id: int, profile_id:
     db.refresh(log)
 
     try:
-        ws_url = ensure_profile_ws(db, profile_id)
+        ws_url = await ensure_profile_ws(db, profile_id)
         await random_delay(limits)
 
         if action_type == "follow":

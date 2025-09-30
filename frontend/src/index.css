@@ -4,4 +4,23 @@
 
 :root { color-scheme: light; }
 html, body, #root { height: 100%; }
-body { @apply bg-gray-50 text-gray-900; }
+body { @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100; }
+
+/* Dark mode scrollbar */
+.dark ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: #374151;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #6b7280;
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}

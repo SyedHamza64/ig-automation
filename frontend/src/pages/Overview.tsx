@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getHealth } from "../api/health";
 import { listAccounts } from "../api/accounts";
 import { listRecentLogs, type ActionLog } from "../api/logs";
+import { listProfiles } from "../api/profiles";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Table, THead, TBody, TH, TD } from "../components/ui/Table";
 
@@ -20,17 +21,27 @@ export default function Overview() {
     queryFn: () => listRecentLogs(20),
     refetchInterval: 15000,
   });
+  const qProfiles = useQuery({
+    queryKey: ["profiles"],
+    queryFn: listProfiles,
+    refetchInterval: 30000,
+  });
 
   const accounts = qAccounts.data || [];
   const logs = qLogs.data || [];
+  const profiles = qProfiles.data || [];
 
   const successRecent = logs.filter((l) => l.status === "success").length;
-  const errorsRecent = logs.filter((l) => l.status !== "success").length;
+  
+  // Profile statistics
+  const bulkcreateProfiles = profiles.filter((p) => !!p.bulk_profile_name).length;
+  const adspowerProfiles = profiles.filter((p) => !!p.adspower_profile_id).length;
+  const linkedProfiles = profiles.filter((p) => !!p.account_id).length;
 
   return (
     <div className="space-y-6">
       {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
         <StatCard
           title="Backend Health"
           value={healthText(qHealth)}
@@ -42,13 +53,23 @@ export default function Overview() {
           subtitle="Total connected"
         />
         <StatCard
-          title="Success (recent)"
-          value={successRecent}
-          subtitle="Last 20 logs"
+          title="Bulkcreate Profiles"
+          value={bulkcreateProfiles}
+          subtitle="Enhanced automation"
         />
         <StatCard
-          title="Errors (recent)"
-          value={errorsRecent}
+          title="AdsPower Profiles"
+          value={adspowerProfiles}
+          subtitle="Legacy profiles"
+        />
+        <StatCard
+          title="Linked Profiles"
+          value={linkedProfiles}
+          subtitle="Connected to accounts"
+        />
+        <StatCard
+          title="Success (recent)"
+          value={successRecent}
           subtitle="Last 20 logs"
         />
       </div>
@@ -117,9 +138,9 @@ function StatCard({
   return (
     <Card>
       <CardBody className="space-y-1">
-        <div className="text-sm text-gray-500">{subtitle}</div>
-        <div className="text-lg font-semibold">{title}</div>
-        <div className="text-3xl font-bold">{value}</div>
+        <div className="text-sm text-gray-500 dark:text-gray-400">{subtitle}</div>
+        <div className="text-lg font-semibold text-gray-900 dark:text-white">{title}</div>
+        <div className="text-3xl font-bold text-gray-900 dark:text-white">{value}</div>
       </CardBody>
     </Card>
   );

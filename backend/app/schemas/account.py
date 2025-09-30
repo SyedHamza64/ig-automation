@@ -12,12 +12,18 @@ class AccountBase(BaseModel):
 
 
 class AccountCreate(AccountBase):
-    pass
+    timezone: Optional[str] = "Asia/Karachi"
+    status: Optional[str] = "new"
+    limits_json: Optional[dict] = {}
 
 
 class AccountUpdate(BaseModel):
     username: Optional[str] = Field(None, alias="handle")
-    profile_id: Optional[int] = None
+    bulk_profile_name: Optional[str] = None
+    adspower_profile_id: Optional[str] = None
+    health: Optional[str] = None
+    last_ws_puppeteer: Optional[str] = None
+    last_ws_selenium: Optional[str] = None
 
     class Config:
         from_attributes = True

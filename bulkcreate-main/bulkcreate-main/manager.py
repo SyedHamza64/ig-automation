@@ -276,6 +276,14 @@ def launch_profile(name):
 
     try:
         # Use undetected_chromedriver
+        # Enable DevTools remote debugging if requested
+        remote_debug = os.environ.get('REMOTE_DEBUG', '').lower() in ('1', 'true', 'yes')
+        remote_arg = None
+        if remote_debug:
+            # let Chrome pick a free port automatically
+            remote_arg = '--remote-debugging-port=0'
+            chrome_options.add_argument(remote_arg)
+
         driver = uc.Chrome(
             driver_executable_path=CHROMEDRIVER_PATH, 
             options=chrome_options,
@@ -303,20 +311,50 @@ def launch_profile(name):
             print("Info: Restoring previous session with tabs", file=sys.stderr)
             time.sleep(3)  # Give Chrome time to restore session
         else:
-            # New session - open startup URLs
-            startup_urls = profile_config.get('startup_urls', ["https://www.google.com"])
-            if startup_urls:
+            # New session - open startup URLs (fallback to Google if none)
+            startup_urls = profile_config.get('startup_urls', ["https://www.google.com"]) or ["https://www.google.com"]
+            try:
                 driver.get(startup_urls[0])
-                time.sleep(2)
-                for url in startup_urls[1:]:
+            except Exception:
+                # As an ultra-safe fallback, ensure a tab remains open
+                driver.get("https://www.google.com")
+            time.sleep(2)
+            for url in startup_urls[1:]:
+                try:
                     driver.execute_script(f"window.open('{url}', '_blank');")
-            print("Info: New session - opened startup URLs", file=sys.stderr)
+                except Exception:
+                    pass
+            print("Info: New session - opened initial tab", file=sys.stderr)
         
         if has_existing_data:
             print("Info: Profile data loaded - cookies and history available", file=sys.stderr)
         
         # Keep the browser open and monitor for closure
         print("Info: Browser is open and running.", file=sys.stderr)
+
+        # If remote debugging was enabled, locate the DevToolsActivePort and print WS JSON
+        if remote_debug:
+            try:
+                # DevToolsActivePort lives under user data dir root
+                active_port_file = os.path.join(profile_data_path, 'DevToolsActivePort')
+                port = None
+                if os.path.exists(active_port_file):
+                    with open(active_port_file, 'r') as f:
+                        lines = f.read().strip().splitlines()
+                        if lines:
+                            port = int(lines[0])
+                if port:
+                    import urllib.request, json as _json
+                    ver_url = f'http://127.0.0.1:{port}/json/version'
+                    with urllib.request.urlopen(ver_url, timeout=3) as resp:
+                        meta = _json.loads(resp.read().decode('utf-8'))
+                        ws = meta.get('webSocketDebuggerUrl')
+                        if ws:
+                            # Emit a single-line JSON for the caller to parse
+                            print(_json.dumps({"ws": ws}))
+                            sys.stdout.flush()
+            except Exception as e:
+                print(f"Warn: could not resolve DevTools WS: {e}", file=sys.stderr)
         
         # Monitor browser status
         try:

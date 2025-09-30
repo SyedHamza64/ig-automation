@@ -13,8 +13,8 @@ const nav = [
 
 export default function Sidebar() {
   return (
-    <aside className="w-60 shrink-0 border-r bg-white">
-      <div className="px-4 py-4 text-lg font-semibold">IG Automation</div>
+    <aside className="w-60 shrink-0 border-r bg-white dark:border-gray-700 dark:bg-gray-800">
+      <div className="px-4 py-4 text-lg font-semibold text-gray-900 dark:text-white">IG Automation</div>
       <nav className="space-y-1 px-2">
         {nav.map(({ to, label, icon: Icon }) => (
           <NavLink
@@ -22,8 +22,10 @@ export default function Sidebar() {
             to={to}
             end={to === "/"}
             className={({ isActive }) =>
-              `flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-gray-50 ${
-                isActive ? "bg-gray-100 font-medium" : "text-gray-700"
+              `flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-700 ${
+                isActive 
+                  ? "bg-gray-100 font-medium text-gray-900 dark:bg-gray-700 dark:text-white" 
+                  : "text-gray-700 dark:text-gray-300"
               }`
             }
           >

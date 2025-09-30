@@ -1,5 +1,12 @@
 // backend/server.js
 const express = require('express');
+// Global error logging to prevent silent exits
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
 const { spawn } = require('child_process');
 const cors = require('cors');
 const fs = require('fs');
@@ -352,7 +359,7 @@ function createBulkEnhancedProfiles(count, deviceType, prefix, antiDetectionConf
             timezone: "Europe/Berlin",
             webrtc: "disabled",
             window_size: [1920, 1080],
-            startup_urls: ["https://httpbin.org/ip"],
+            startup_urls: [],
             remark: `Enhanced profile ${currentIndex} created via bulk operation`,
             deviceType: deviceType,
             anti_detection: antiDetectionConfig || {}  // Include anti-detection configuration
@@ -448,6 +455,16 @@ app.post('/api/profiles/launch', (req, res) => {
     runningProcesses.set(name, pythonProcess);
     console.log(`[+] Process started for '${name}' with PID: ${pythonProcess.pid}`);
 
+    // Pipe logs for visibility
+    pythonProcess.stdout.on('data', (d) => {
+        const txt = d.toString();
+        console.log(`[mgr:${name}] ${txt.trim()}`);
+    });
+    pythonProcess.stderr.on('data', (d) => {
+        const txt = d.toString();
+        console.warn(`[mgr:${name}:err] ${txt.trim()}`);
+    });
+
     // When the process closes (e.g., user closes the browser), remove it from our list
     pythonProcess.on('close', (code) => {
         runningProcesses.delete(name);
@@ -455,6 +472,154 @@ app.post('/api/profiles/launch', (req, res) => {
     });
 
     res.status(200).json({ message: `Launch command issued for '${name}'.` });
+});
+
+// Cache for last known DevTools WS per profile
+const lastKnownWs = new Map();
+
+// New: launch and return DevTools WS for CDP control
+app.post('/api/profiles/launch-cdp', (req, res) => {
+    const { name } = req.body;
+
+    if (!name) return res.status(400).json({ error: 'name required' });
+    if (runningProcesses.has(name)) {
+        // If already running, try to return existing WS immediately
+        if (lastKnownWs.has(name)) {
+            return res.status(200).json({ ws: lastKnownWs.get(name), from: 'cache' });
+        }
+        // Attempt to resolve via DevToolsActivePort
+        const devtoolsFile = path.join(__dirname, '../selenium_profiles', name, 'DevToolsActivePort');
+        try {
+            if (fs.existsSync(devtoolsFile)) {
+                const content = fs.readFileSync(devtoolsFile, 'utf8').trim();
+                const port = parseInt(content.split(/\r?\n/)[0], 10);
+                if (port > 0) {
+                    const http = require('http');
+                    const opts = { hostname: '127.0.0.1', port, path: '/json/version', method: 'GET' };
+                    const req2 = http.request(opts, (r2) => {
+                        let data = '';
+                        r2.on('data', (c) => (data += c.toString()));
+                        r2.on('end', () => {
+                            try {
+                                const meta = JSON.parse(data);
+                                const ws = meta.webSocketDebuggerUrl;
+                                if (ws) {
+                                    lastKnownWs.set(name, ws);
+                                    return res.status(200).json({ ws, from: 'probe' });
+                                }
+                            } catch {}
+                            return res.status(409).json({ error: `Profile '${name}' is already running.` });
+                        });
+                    });
+                    req2.on('error', () => res.status(409).json({ error: `Profile '${name}' is already running.` }));
+                    req2.end();
+                    return;
+                }
+            }
+        } catch {}
+        return res.status(409).json({ error: `Profile '${name}' is already running.` });
+    }
+
+    // Detect if enhanced
+    const profileMetadataPath = path.join(__dirname, '../selenium_profiles', name, 'enhanced_mode.json');
+    let enhancedMode = false;
+    try {
+        if (fs.existsSync(profileMetadataPath)) {
+            const metadata = JSON.parse(fs.readFileSync(profileMetadataPath, 'utf8'));
+            enhancedMode = metadata.enhancedMode || false;
+        }
+    } catch (e) {}
+
+    const spawnArgs = enhancedMode
+        ? ['python', path.join(__dirname, '../bulkcreate_enhanced_test.py'), '--launch-only', '--name', name]
+        : ['python', 'manager.py', 'launch', '--name', name];
+
+    const env = { ...process.env, REMOTE_DEBUG: 'true' };
+    const proc = spawn(spawnArgs[0], spawnArgs.slice(1), { cwd: path.join(__dirname, '..'), env });
+    runningProcesses.set(name, proc);
+
+    let wsLine = '';
+    let resolved = false;
+    const profileDevtoolsFile = path.join(__dirname, '../selenium_profiles', name, 'DevToolsActivePort');
+
+    const onData = (data) => {
+        if (resolved) return;
+        const text = data.toString();
+        // look for a single-line JSON {"ws":"..."}
+        const match = text.match(/\{\"ws\"\s*:\s*\"[^\"]+\"\}/);
+        if (match) {
+            wsLine = match[0];
+            try {
+                const parsed = JSON.parse(wsLine);
+                resolved = true;
+                if (parsed.ws) {
+                    lastKnownWs.set(name, parsed.ws);
+                }
+                res.status(200).json(parsed);
+            } catch (e) {
+                // ignore parse error
+            }
+        }
+    };
+
+    proc.stdout.on('data', (d) => {
+        const txt = d.toString();
+        console.log(`[cdp:${name}] ${txt.trim()}`);
+        onData(d);
+    });
+    proc.stderr.on('data', (d) => {
+        const txt = d.toString();
+        console.warn(`[cdp:${name}:err] ${txt.trim()}`);
+    });
+
+    // Fallback: poll DevToolsActivePort and derive WS URL
+    let tries = 0;
+    const maxTries = 20; // ~10s
+    const tryResolveFromFile = () => {
+        if (resolved) return;
+        tries += 1;
+        try {
+            if (fs.existsSync(profileDevtoolsFile)) {
+                const content = fs.readFileSync(profileDevtoolsFile, 'utf8').trim();
+                const port = parseInt(content.split(/\r?\n/)[0], 10);
+                if (port > 0) {
+                    // Query /json/version to get webSocketDebuggerUrl
+                    const http = require('http');
+                    const opts = { hostname: '127.0.0.1', port, path: '/json/version', method: 'GET' };
+                    const req2 = http.request(opts, (r2) => {
+                        let data = '';
+                        r2.on('data', (c) => (data += c.toString()));
+                        r2.on('end', () => {
+                            try {
+                                const meta = JSON.parse(data);
+                                const ws = meta.webSocketDebuggerUrl;
+                                if (ws && !resolved) {
+                                    resolved = true;
+                                    lastKnownWs.set(name, ws);
+                                    return res.status(200).json({ ws });
+                                }
+                            } catch {}
+                            if (!resolved && tries < maxTries) setTimeout(tryResolveFromFile, 500);
+                        });
+                    });
+                    req2.on('error', () => {
+                        if (!resolved && tries < maxTries) setTimeout(tryResolveFromFile, 500);
+                    });
+                    req2.end();
+                    return;
+                }
+            }
+        } catch {}
+        if (!resolved && tries < maxTries) setTimeout(tryResolveFromFile, 500);
+    };
+    setTimeout(tryResolveFromFile, 400);
+
+    proc.on('close', (code) => {
+        runningProcesses.delete(name);
+        if (!resolved) {
+            res.status(500).json({ error: 'launch ended without WS', code });
+        }
+    });
 });
 
 // Enhanced profile launch function
@@ -469,6 +634,16 @@ function launchEnhancedProfile(name, res) {
     // Store the process PID by profile name
     runningProcesses.set(name, pythonProcess);
     console.log(`[+] Enhanced process started for '${name}' with PID: ${pythonProcess.pid}`);
+
+    // Pipe logs for visibility
+    pythonProcess.stdout.on('data', (d) => {
+        const txt = d.toString();
+        console.log(`[enh:${name}] ${txt.trim()}`);
+    });
+    pythonProcess.stderr.on('data', (d) => {
+        const txt = d.toString();
+        console.warn(`[enh:${name}:err] ${txt.trim()}`);
+    });
 
     // When the process closes (e.g., user closes the browser), remove it from our list
     pythonProcess.on('close', (code) => {
@@ -583,7 +758,7 @@ app.post('/api/profiles/bulk-create', (req, res) => {
             timezone: "Europe/Berlin",
             webrtc: "disabled",
             window_size: [1920, 1080],
-            startup_urls: ["https://httpbin.org/ip"],
+            startup_urls: [],
             remark: `Standard profile ${profileNumber} created via bulk operation`
         };
         
@@ -975,4 +1150,4 @@ app.put('/api/settings', (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Backend server running on http://localhost:${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Backend server running on http://127.0.0.1:${PORT}`));

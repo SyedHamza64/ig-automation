@@ -11,7 +11,7 @@ const CreateProfileModal = ({ isOpen, onClose, onSubmit }) => {
     timezone: 'Europe/Berlin',
     window_size: [1920, 1080],
     webrtc: 'disabled',
-    startup_urls: ['https://httpbin.org/ip'],
+    startup_urls: [],
     groupId: ''
   });
   const [groups, setGroups] = useState([]);
@@ -163,7 +163,7 @@ const CreateProfileModal = ({ isOpen, onClose, onSubmit }) => {
     const cleanedUrls = formData.startup_urls.filter(url => url.trim());
     const config = {
       ...formData,
-      startup_urls: cleanedUrls.length > 0 ? cleanedUrls : ['https://www.google.com']
+      startup_urls: cleanedUrls
     };
     
     onSubmit(formData.name, config, formData.groupId, enhancedMode, antiDetection);
@@ -179,7 +179,7 @@ const CreateProfileModal = ({ isOpen, onClose, onSubmit }) => {
       timezone: 'Europe/Berlin',
       window_size: [1920, 1080],
       webrtc: 'disabled',
-      startup_urls: ['https://www.google.com'],
+      startup_urls: [],
       groupId: ''
     });
     setEnhancedMode(true); // Reset to enhanced mode

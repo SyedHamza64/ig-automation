@@ -12,7 +12,7 @@ import {
   type ActionRequest 
 } from "../api/actions";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
-import { Table, TBody, TD } from "../components/ui/Table";
+import { Table, TBody, TD, THead, TH } from "../components/ui/Table";
 import { toast } from "../components/ui/Toast";
 
 type ActionType = "follow" | "unfollow" | "like-recent";
@@ -27,6 +27,7 @@ export default function ActionsPage() {
   const [useMassFollow, setUseMassFollow] = useState<boolean>(true);
   const [streaming, setStreaming] = useState<boolean>(false);
   const [progress, setProgress] = useState<{acted:number; processed:number; total:number|null}>({acted:0, processed:0, total:0});
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   
   const queryClient = useQueryClient();
 
@@ -35,6 +36,7 @@ export default function ActionsPage() {
     queryKey: ["accounts"],
     queryFn: listAccounts,
   });
+  const accountById = new Map(accounts.map((a: any) => [a.id, a]));
 
   // Load recent logs
   const { data: recentLogs = [], isLoading: logsLoading } = useQuery({
@@ -84,8 +86,8 @@ export default function ActionsPage() {
   });
 
   const handleSubmit = () => {
-    if (!selectedAccount || !selectedAccount.profile_id) {
-      toast("Please select an account with a linked profile", "error");
+    if (!selectedAccount || (!selectedAccount.bulk_profile_name && !selectedAccount.adspower_profile_id)) {
+      toast("Please select an account with a linked profile (bulkcreate or AdsPower)", "error");
       return;
     }
 
@@ -101,7 +103,7 @@ export default function ActionsPage() {
 
     const payload: ActionRequest = {
       account_id: selectedAccount.id,
-      profile_id: selectedAccount.profile_id,
+      profile_id: selectedAccount.id, // Use account_id as profile_id since we merged the models
       usernames: usernameList,
     };
 
@@ -123,7 +125,7 @@ export default function ActionsPage() {
         setProgress({acted:0, processed:0, total:0});
         const es = startMassFollowStream({
           account_id: selectedAccount.id,
-          profile_id: selectedAccount.profile_id,
+          profile_id: selectedAccount.id, // Use account_id as profile_id since we merged the models
           username,
           limit: followLimit,
           section: followSection,
@@ -162,30 +164,36 @@ export default function ActionsPage() {
   const isLoading = followMutation.isPending || unfollowMutation.isPending || likeRecentMutation.isPending;
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Actions</h1>
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 space-y-6 p-6">
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Actions</h1>
 
       {/* Action Form */}
-      <Card>
+      <Card className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
         <CardHeader title="Run Action" />
         <CardBody className="space-y-4">
           {/* Account Selection */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Select Account
             </label>
             {accountsLoading ? (
-              <div className="text-sm text-gray-500">Loading accounts...</div>
+              <div className="text-sm text-gray-500 dark:text-gray-400">Loading accounts...</div>
             ) : (
               <select
                 value={selectedAccountId || ""}
                 onChange={(e) => setSelectedAccountId(Number(e.target.value))}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="">Select an account...</option>
                 {accounts.map((account) => (
                   <option key={account.id} value={account.id}>
-                    @{account.handle} {account.profile_id ? `(Profile: ${account.profile_id})` : "(No Profile)"}
+                    @{account.handle} {
+                      account.bulk_profile_name 
+                        ? `(Bulkcreate: ${account.bulk_profile_name})` 
+                        : account.adspower_profile_id 
+                          ? `(AdsPower: ${account.adspower_profile_id})` 
+                          : "(No Profile)"
+                    }
                   </option>
                 ))}
               </select>
@@ -194,7 +202,7 @@ export default function ActionsPage() {
 
           {/* Action Type */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Action Type
             </label>
             <div className="flex space-x-4">
@@ -206,9 +214,9 @@ export default function ActionsPage() {
                     value={type}
                     checked={actionType === type}
                     onChange={(e) => setActionType(e.target.value as ActionType)}
-                    className="mr-2"
+                    className="mr-2 text-blue-600 focus:ring-blue-500"
                   />
-                  <span className="text-sm capitalize">{type.replace("-", " ")}</span>
+                  <span className="text-sm capitalize text-gray-900 dark:text-white">{type.replace("-", " ")}</span>
                 </label>
               ))}
             </div>
@@ -216,7 +224,7 @@ export default function ActionsPage() {
 
           {/* Usernames Input */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Target Usernames
             </label>
             <input
@@ -224,9 +232,9 @@ export default function ActionsPage() {
               value={usernames}
               onChange={(e) => setUsernames(e.target.value)}
               placeholder="Enter usernames separated by commas (e.g., instagram, natgeo, nike)"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-500 dark:placeholder-gray-400"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
               Separate multiple usernames with commas
             </p>
           </div>
@@ -235,30 +243,30 @@ export default function ActionsPage() {
           {actionType === "follow" && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Follow From</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Follow From</label>
                 <select
                   value={followSection}
                   onChange={(e) => setFollowSection(e.target.value as any)}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="followers">Followers of username</option>
                   <option value="following">Following of username</option>
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Follow Limit</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Follow Limit</label>
                 <input
                   type="number"
                   min={1}
                   max={200}
                   value={followLimit}
                   onChange={(e) => setFollowLimit(Number(e.target.value))}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
               <div className="md:col-span-2 flex items-center gap-3">
-                <input id="toggleMassFollow" type="checkbox" checked={useMassFollow} onChange={(e)=>setUseMassFollow(e.target.checked)} />
-                <label htmlFor="toggleMassFollow" className="text-sm text-gray-700">Use mass-follow stream (safer scrolling + delays)</label>
+                <input id="toggleMassFollow" type="checkbox" checked={useMassFollow} onChange={(e)=>setUseMassFollow(e.target.checked)} className="text-blue-600 focus:ring-blue-500" />
+                <label htmlFor="toggleMassFollow" className="text-sm text-gray-700 dark:text-gray-300">Use mass-follow stream (safer scrolling + delays)</label>
               </div>
             </div>
           )}
@@ -266,7 +274,7 @@ export default function ActionsPage() {
           {/* Count Input (for like-recent) */}
           {actionType === "like-recent" && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Number of Posts to Like
               </label>
               <input
@@ -275,7 +283,7 @@ export default function ActionsPage() {
                 max="10"
                 value={count}
                 onChange={(e) => setCount(Number(e.target.value))}
-                className="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-32 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
           )}
@@ -284,11 +292,11 @@ export default function ActionsPage() {
           <div>
             <button
               onClick={handleSubmit}
-              disabled={isLoading || streaming || !selectedAccount || !selectedAccount.profile_id}
+              disabled={isLoading || streaming || !selectedAccount || (!selectedAccount.bulk_profile_name && !selectedAccount.adspower_profile_id)}
               className={`px-4 py-2 rounded-md text-sm font-medium ${
-                isLoading || streaming || !selectedAccount || !selectedAccount.profile_id
-                  ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                  : "bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                isLoading || streaming || !selectedAccount || (!selectedAccount.bulk_profile_name && !selectedAccount.adspower_profile_id)
+                  ? "bg-gray-300 dark:bg-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                  : "bg-blue-600 dark:bg-blue-700 text-white hover:bg-blue-700 dark:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
               }`}
             >
               {isLoading || streaming ? (
@@ -308,58 +316,86 @@ export default function ActionsPage() {
       </Card>
 
       {/* Recent Actions Table */}
-      <Card>
+      <Card className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
         <CardHeader title="Recent Actions" />
         <CardBody>
           {logsLoading ? (
-            <div className="text-sm text-gray-500">Loading recent actions...</div>
+            <div className="text-sm text-gray-500 dark:text-gray-400">Loading recent actions...</div>
           ) : recentLogs.length === 0 ? (
-            <div className="text-sm text-gray-500">No recent actions found</div>
+            <div className="text-sm text-gray-500 dark:text-gray-400">No recent actions found</div>
           ) : (
             <Table>
+              <THead>
+                <tr>
+                  <TH className="w-16">ID</TH>
+                  <TH>Account</TH>
+                  <TH>Action</TH>
+                  <TH>Status</TH>
+                  <TH className="w-72">Results</TH>
+                  <TH className="whitespace-nowrap">Time</TH>
+                </tr>
+              </THead>
               <TBody>
                 {recentLogs.map((log: any) => (
-                  <tr key={log.id} className="border-t">
-                    <TD className="text-xs text-gray-500">
+                  <tr key={log.id} className="border-t border-gray-200 dark:border-gray-700">
+                    <TD className="text-xs text-gray-500 dark:text-gray-400">
                       {log.id}
                     </TD>
-                    <TD className="text-sm">
-                      @{log.account_handle || "Unknown"}
+                    <TD className="text-sm text-gray-900 dark:text-white">
+                      @{accountById.get(log.account_id)?.handle || "Unknown"}
                     </TD>
                     <TD>
                       <span className={`rounded px-2 py-0.5 text-xs ${
-                        log.action === 'like' ? 'bg-red-100 text-red-700' :
-                        log.action === 'follow' ? 'bg-blue-100 text-blue-700' :
-                        log.action === 'unfollow' ? 'bg-gray-100 text-gray-700' :
-                        'bg-yellow-100 text-yellow-700'
+                        (log.action === 'like' || log.action === 'like_recent') ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
+                        log.action === 'follow' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
+                        log.action === 'unfollow' ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' :
+                        'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300'
                       }`}>
-                        {log.action}
+                        {String(log.action)}
                       </span>
                     </TD>
                     <TD>
                       <span className={`rounded px-2 py-0.5 text-xs ${
-                        log.status === 'success' ? 'bg-green-100 text-green-700' :
-                        log.status === 'error' ? 'bg-red-100 text-red-700' :
-                        'bg-gray-100 text-gray-600'
+                        log.status === 'success' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+                        log.status === 'error' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
+                        'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
                       }`}>
                         {log.status}
                       </span>
                     </TD>
-                    <TD className="text-sm">
+                    <TD className="text-sm text-gray-900 dark:text-white">
                       {log.result ? (
-                        <div className="max-w-xs truncate">
-                          {Array.isArray(log.result) ? 
-                            log.result.map((r: any, i: number) => (
-                              <div key={i} className="text-xs">
-                                {r.username}: {r.status}
-                              </div>
-                            )) :
-                            JSON.stringify(log.result)
-                          }
+                        <div className="space-y-2">
+                          {expandedRows.has(log.id) ? (
+                            <div className="rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+                              <pre className="whitespace-pre-wrap break-words overflow-x-auto">{JSON.stringify(log.result, null, 2)}</pre>
+                            </div>
+                          ) : (
+                            <div className="max-w-xs truncate text-xs text-gray-600 dark:text-gray-400">
+                              {(() => { const s = JSON.stringify(log.result); return s.slice(0,80) + (s.length>80 ? '…' : ''); })()}
+                            </div>
+                          )}
+                          <button
+                            onClick={() => {
+                              setExpandedRows(prev => {
+                                const next = new Set(prev);
+                                if (next.has(log.id)) {
+                                  next.delete(log.id);
+                                } else {
+                                  next.add(log.id);
+                                }
+                                return next;
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                            aria-expanded={expandedRows.has(log.id)}
+                          >
+                            {expandedRows.has(log.id) ? 'Hide' : 'View'} results
+                          </button>
                         </div>
-                      ) : "—"}
+                      ) : '—'}
                     </TD>
-                    <TD className="text-xs text-gray-500">
+                    <TD className="text-xs text-gray-500 dark:text-gray-400">
                       {new Date(log.created_at).toLocaleString()}
                     </TD>
                   </tr>

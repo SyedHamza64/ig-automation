@@ -1,0 +1,104 @@
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: Auto-launch failed: asyncio.run() cannot be called from a running event loop
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: Auto-launched profile and stored WebSocket URL: ws://127.0.0.1:60268/devtools/browser/f0a5e16b-392a-485a-8a81-7fe68bad8744
+DEBUG: Profile Profile_enh_10 is not running, launching...
+DEBUG: Re-launched profile and got new WebSocket URL: ws://127.0.0.1:60268/devtools/browser/f0a5e16b-392a-485a-8a81-7fe68bad8744
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: Auto-launched profile and stored WebSocket URL: ws://127.0.0.1:60268/devtools/browser/f0a5e16b-392a-485a-8a81-7fe68bad8744
+DEBUG: Profile Profile_enh_10 is not running, launching...
+DEBUG: Re-launched profile and got new WebSocket URL: ws://127.0.0.1:60268/devtools/browser/f0a5e16b-392a-485a-8a81-7fe68bad8744
+DEBUG: run_action called with action_type=follow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: Profile Profile_enh_10 is not running, launching...
+DEBUG: Re-launched profile and got new WebSocket URL: ws://127.0.0.1:60268/devtools/browser/f0a5e16b-392a-485a-8a81-7fe68bad8744
+DEBUG: run_action called with action_type=unfollow, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: Profile Profile_enh_10 is not running, launching...
+DEBUG: Re-launched profile and got new WebSocket URL: ws://127.0.0.1:60268/devtools/browser/f0a5e16b-392a-485a-8a81-7fe68bad8744
+DEBUG: run_action called with action_type=like, account_id=115, profile_id=115
+DEBUG: Getting account limits for account_id=115
+DEBUG: Checking rate limits
+DEBUG: Creating action log
+DEBUG: About to call ensure_profile_ws with profile_id=115
+DEBUG: ensure_profile_ws called with profile_id=115
+DEBUG: Found account 115, bulk_profile_name=Profile_enh_10, adspower_profile_id=None
+DEBUG: Profile Profile_enh_10 is not running, launching...
+DEBUG: Re-launched profile and got new WebSocket URL: ws://127.0.0.1:60268/devtools/browser/f0a5e16b-392a-485a-8a81-7fe68bad8744

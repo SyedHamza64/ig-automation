@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { 
   listAccounts, 
   getAccountStats, 
@@ -7,6 +7,11 @@ import {
   getAccountLimits,
   getLoginState,
   wsCheckProfile,
+  createAccount,
+  createBulkAccounts,
+  getUnlinkedAccounts,
+  deleteUnlinkedAccounts,
+  deleteAccount,
   type AccountRow,
   type LoginState
 } from "../api/accounts";
@@ -22,11 +27,19 @@ export default function AccountsPage() {
   console.log("[AccountsPage] Component rendering");
   
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   // Load accounts list
   const { data: accounts = [], isLoading: accountsLoading, error: accountsError } = useQuery({
     queryKey: ["accounts"],
     queryFn: listAccounts,
+  });
+
+  // Load unlinked accounts
+  const { data: unlinkedAccounts } = useQuery({
+    queryKey: ["unlinked-accounts"],
+    queryFn: getUnlinkedAccounts,
+    refetchInterval: 20000,
   });
 
   // Debug logging
@@ -69,44 +82,92 @@ export default function AccountsPage() {
   }
 
   return (
-    <div className="flex h-full">
-      {/* Left sidebar - Account list */}
-      <div className="w-80 border-r bg-gray-50 p-4">
-        <h2 className="mb-4 text-lg font-semibold">Accounts ({accounts.length})</h2>
-        {accounts.length === 0 ? (
-          <div className="text-sm text-gray-500">No accounts found</div>
-        ) : (
-          <div className="space-y-2">
-            {accounts.map((account) => (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      <div className="max-w-7xl mx-auto p-6">
+        <div className="space-y-6">
+          {/* Account Management Section */}
+          <Card>
+        <CardHeader 
+          title="Account Management" 
+          subtitle={`${accounts?.length || 0} total accounts • ${unlinkedAccounts?.count || 0} unlinked`} 
+        />
+        <CardBody>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
               <button
-                key={account.id}
-                onClick={() => setSelectedAccountId(account.id)}
-                className={`w-full rounded-lg border p-3 text-left transition-colors ${
-                  selectedAccountId === account.id
-                    ? "border-blue-500 bg-blue-50"
-                    : "border-gray-200 bg-white hover:bg-gray-50"
-                }`}
+                onClick={() => setShowCreateModal(true)}
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
               >
-                <div className="font-medium">@{account.handle}</div>
-                <div className="text-xs text-gray-500">
-                  ID: {account.id}
-                  {account.profile_id && ` • Profile: ${account.profile_id}`}
-                </div>
+                Create Account
               </button>
-            ))}
+              {unlinkedAccounts?.count > 0 && (
+                <DeleteUnlinkedAccountsButton />
+              )}
+            </div>
+            <div className="text-sm text-gray-600 dark:text-gray-400">
+              {unlinkedAccounts?.count > 0 && (
+                <span className="text-yellow-600 dark:text-yellow-400">
+                  ⚠️ {unlinkedAccounts.count} unlinked accounts found
+                </span>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+        </CardBody>
+      </Card>
+
+      <div className="flex h-[600px]">
+        {/* Left sidebar - Account list */}
+        <div className="w-80 border-r bg-gray-50 dark:bg-gray-800 flex flex-col">
+          <div className="p-4 border-b dark:border-gray-700 flex-shrink-0">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Accounts ({accounts.length})</h2>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            {accounts.length === 0 ? (
+              <div className="text-sm text-gray-500 dark:text-gray-400">No accounts found</div>
+            ) : (
+              <div className="space-y-2">
+                {accounts.map((account) => (
+                  <AccountListItem 
+                    key={account.id} 
+                    account={account} 
+                    isSelected={selectedAccountId === account.id}
+                    onSelect={() => setSelectedAccountId(account.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
 
       {/* Right pane - Account details */}
-      <div className="flex-1 p-6">
-        {selectedAccount ? (
-          <AccountDetails account={selectedAccount} />
-        ) : (
-          <div className="flex h-full items-center justify-center text-gray-500">
-            Select an account to view details
-          </div>
-        )}
+      <div className="flex-1 flex flex-col">
+        <div className="flex-1 overflow-y-auto p-6">
+          {selectedAccount ? (
+            <AccountDetails account={selectedAccount} />
+          ) : (
+            <div className="flex h-full items-center justify-center text-gray-500 dark:text-gray-400">
+              <div className="text-center">
+                <div className="text-4xl mb-2">👥</div>
+                <div className="text-lg font-medium">Select an Account</div>
+                <div className="text-sm">Choose an account from the sidebar to view details</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      </div>
+
+      {/* Create Account Modal */}
+      {showCreateModal && (
+        <CreateAccountModal 
+          onClose={() => setShowCreateModal(false)} 
+          onSuccess={() => {
+            setShowCreateModal(false);
+            // Refresh accounts list
+          }} 
+        />
+      )}
+        </div>
       </div>
     </div>
   );
@@ -134,19 +195,20 @@ function AccountDetails({ account }: { account: AccountRow }) {
     staleTime: 20000,
   });
 
-  // Login state (only if profile_id exists)
+  // Login state (only if account has profile connections)
+  const hasProfileConnection = !!(account.bulk_profile_name || account.adspower_profile_id);
   const { data: loginState } = useQuery({
-    queryKey: ["login-state", account.profile_id],
-    queryFn: () => getLoginState(account.profile_id!),
+    queryKey: ["login-state", account.id],
+    queryFn: () => getLoginState(account.id),
     refetchInterval: 15000,
-    enabled: !!account.profile_id,
+    enabled: hasProfileConnection,
   });
 
-  // WS check (only if profile_id exists)
+  // WS check (only if account has profile connections)
   const { data: wsCheck } = useQuery({
-    queryKey: ["ws-check", account.profile_id],
-    queryFn: () => wsCheckProfile(account.profile_id!),
-    enabled: !!account.profile_id,
+    queryKey: ["ws-check", account.id],
+    queryFn: () => wsCheckProfile(account.id),
+    enabled: hasProfileConnection,
   });
 
   // Daily counts for display
@@ -168,12 +230,23 @@ function AccountDetails({ account }: { account: AccountRow }) {
           <h1 className="text-2xl font-bold">@{account.handle}</h1>
           <div className="text-sm text-gray-500">
             Account ID: {account.id}
-            {account.profile_id && ` • Profile: ${account.profile_id}`}
-            {account.adspower_profile_id && ` • AdsPower: ${account.adspower_profile_id}`}
+            {hasProfileConnection && ` • Profile: ${hasProfileConnection}`}
+            {account.bulk_profile_name && (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">Bulkcreate</span>
+                <span className="text-xs">{account.bulk_profile_name}</span>
+              </div>
+            )}
+            {account.adspower_profile_id && (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="rounded bg-gray-50 px-2 py-0.5 text-xs text-gray-700">AdsPower</span>
+                <span className="text-xs">{account.adspower_profile_id}</span>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex gap-2">
-          {account.profile_id && (
+          {hasProfileConnection && (
             <>
               <LoginBadge state={loginState?.state} />
               <WSBadge wsCheck={wsCheck} />
@@ -332,5 +405,296 @@ function WSBadge({ wsCheck }: { wsCheck?: any }) {
     }`}>
       {isOk ? "ws ok" : "ws fail"}
     </span>
+  );
+}
+
+function AccountListItem({ account, isSelected, onSelect }: { account: AccountRow; isSelected: boolean; onSelect: () => void }) {
+  const [isDeleting, setIsDeleting] = useState(false);
+  const qc = useQueryClient();
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteAccount(account.id),
+    onSuccess: () => {
+      toast(`Account @${account.handle} deleted successfully!`);
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["unlinked-accounts"] });
+    },
+    onError: (error) => {
+      toast(`Error deleting account: ${error.message}`);
+    }
+  });
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`Are you sure you want to delete account @${account.handle}? This action cannot be undone.`)) {
+      return;
+    }
+    
+    setIsDeleting(true);
+    try {
+      await deleteMutation.mutateAsync();
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const hasProfileConnection = !!(account.bulk_profile_name || account.adspower_profile_id);
+  const isUnlinked = !hasProfileConnection;
+
+  return (
+    <div className={`rounded-lg border p-3 transition-colors ${
+      isSelected
+        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
+        : isUnlinked
+          ? "border-yellow-200 bg-yellow-50 dark:border-yellow-700 dark:bg-yellow-900/20"
+          : "border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800"
+    }`}>
+      <div className="flex items-center justify-between">
+        <button
+          onClick={onSelect}
+          className="flex-1 text-left"
+        >
+          <div className="flex items-center gap-2">
+            <div className="font-medium text-gray-900 dark:text-white">@{account.handle}</div>
+            {isUnlinked && (
+              <span className="rounded bg-yellow-100 px-2 py-0.5 text-xs text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
+                Unlinked
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-gray-500 dark:text-gray-400">
+            ID: {account.id}
+            {hasProfileConnection && ` • Profile: ${hasProfileConnection}`}
+            {account.bulk_profile_name && (
+              <div className="flex items-center gap-1 mt-1">
+                <span className="rounded bg-blue-50 px-1 py-0.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">Bulk</span>
+                <span className="text-xs">{account.bulk_profile_name}</span>
+              </div>
+            )}
+            {account.adspower_profile_id && (
+              <div className="flex items-center gap-1 mt-1">
+                <span className="rounded bg-gray-50 px-1 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">AdsPower</span>
+                <span className="text-xs">{account.adspower_profile_id}</span>
+              </div>
+            )}
+          </div>
+        </button>
+        <button
+          onClick={handleDelete}
+          disabled={isDeleting}
+          className="ml-2 rounded-md bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-500 dark:hover:bg-red-600"
+        >
+          {isDeleting ? "..." : "×"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DeleteUnlinkedAccountsButton() {
+  const [isDeleting, setIsDeleting] = useState(false);
+  const qc = useQueryClient();
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteUnlinkedAccounts,
+    onSuccess: (result) => {
+      toast(`Successfully deleted ${result.deleted} unlinked accounts!`);
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["unlinked-accounts"] });
+    },
+    onError: (error) => {
+      toast(`Error deleting accounts: ${error.message}`);
+    }
+  });
+
+  const handleDelete = async () => {
+    if (!confirm("Are you sure you want to delete all unlinked accounts? This action cannot be undone.")) {
+      return;
+    }
+    
+    setIsDeleting(true);
+    try {
+      await deleteMutation.mutateAsync();
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleDelete}
+      disabled={isDeleting}
+      className="rounded-md bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-500 dark:hover:bg-red-600"
+    >
+      {isDeleting ? "Deleting..." : "Delete All Unlinked"}
+    </button>
+  );
+}
+
+function CreateAccountModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [handle, setHandle] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
+  const [bulkCount, setBulkCount] = useState(1);
+  const [bulkPrefix, setBulkPrefix] = useState("account");
+  const [creationMode, setCreationMode] = useState<'single' | 'bulk'>('single');
+  const [timestamp] = useState(Date.now().toString().slice(-6));
+  const qc = useQueryClient();
+
+  const createAccountMutation = useMutation({
+    mutationFn: async (data: { handle: string }) => {
+      return await createAccount(data.handle);
+    },
+    onSuccess: () => {
+      toast("Account created successfully!");
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      onSuccess();
+    },
+    onError: (error) => {
+      toast(`Error creating account: ${error.message}`);
+    }
+  });
+
+  const createBulkAccountsMutation = useMutation({
+    mutationFn: async (data: { count: number; prefix: string }) => {
+      return await createBulkAccounts(data.count, data.prefix);
+    },
+    onSuccess: (accounts) => {
+      toast(`Successfully created ${accounts.length} accounts!`);
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      onSuccess();
+    },
+    onError: (error) => {
+      toast(`Error creating accounts: ${error.message}`);
+    }
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (creationMode === 'single') {
+      if (!handle.trim()) return;
+      setIsCreating(true);
+      try {
+        await createAccountMutation.mutateAsync({ handle: handle.trim() });
+      } finally {
+        setIsCreating(false);
+      }
+    } else {
+      if (bulkCount < 1 || bulkCount > 100) {
+        toast("Please enter a count between 1 and 100");
+        return;
+      }
+      setIsCreating(true);
+      try {
+        await createBulkAccountsMutation.mutateAsync({ count: bulkCount, prefix: bulkPrefix });
+      } finally {
+        setIsCreating(false);
+      }
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+      <div className="w-full max-w-md rounded-lg bg-white p-6 dark:bg-gray-800">
+        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Create Account(s)</h2>
+        
+        {/* Mode Selection */}
+        <div className="mb-4">
+          <div className="flex rounded-md border border-gray-300 dark:border-gray-600">
+            <button
+              type="button"
+              onClick={() => setCreationMode('single')}
+              className={`flex-1 px-3 py-2 text-sm ${
+                creationMode === 'single'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+              }`}
+            >
+              Single
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreationMode('bulk')}
+              className={`flex-1 px-3 py-2 text-sm ${
+                creationMode === 'bulk'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+              }`}
+            >
+              Bulk
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {creationMode === 'single' ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Account Handle
+              </label>
+              <input
+                type="text"
+                value={handle}
+                onChange={(e) => setHandle(e.target.value)}
+                placeholder="Enter account handle"
+                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                required
+              />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Number of Accounts
+                </label>
+                <input
+                  type="number"
+                  value={bulkCount}
+                  onChange={(e) => setBulkCount(parseInt(e.target.value) || 1)}
+                  placeholder="Enter number of accounts"
+                  min="1"
+                  max="100"
+                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Prefix (e.g., "account" → account_123456_1, account_123456_2, ...)
+                </label>
+                <input
+                  type="text"
+                  value={bulkPrefix}
+                  onChange={(e) => setBulkPrefix(e.target.value)}
+                  placeholder="Enter prefix"
+                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                  required
+                />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Names will be: {bulkPrefix}_{timestamp}_1, {bulkPrefix}_{timestamp}_2, etc.
+                </p>
+              </div>
+            </div>
+          )}
+          
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={isCreating}
+              className="flex-1 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
+            >
+              {isCreating ? "Creating..." : `Create ${creationMode === 'single' ? 'Account' : `${bulkCount} Accounts`}`}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }

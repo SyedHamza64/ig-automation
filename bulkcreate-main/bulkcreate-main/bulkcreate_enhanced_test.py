@@ -309,7 +309,7 @@ PROFILE_CONFIG = {
     "timezone": "Europe/Berlin",  # Germany timezone
     "window_size": [1920, 1080],  # Desktop resolution
     "webrtc": "disabled",  # WebRTC disabled
-    "startup_urls": ["https://httpbin.org/ip"],  # Your test URL
+    "startup_urls": [],  # No auto-start URLs
     "groupId": ""  # No group
 }
 
@@ -626,15 +626,27 @@ def launch_profile_enhanced(profile_name, profile_idx, config=None):
         except Exception as e:
             logger.warning(f"Profile {profile_idx}: User agent override failed: {e}")
         
-        # Navigate to startup URL with human-like behavior
-        test_url = PROFILE_CONFIG['startup_urls'][0]
+        # If remote debugging requested, try to emit DevTools WS
+        if os.environ.get('REMOTE_DEBUG', '').lower() in ('1','true','yes'):
+            try:
+                # Enhanced path stores user-data-dir at profile_path
+                active_port_file = profile_path / 'DevToolsActivePort'
+                if active_port_file.exists():
+                    port = int(active_port_file.read_text().strip().splitlines()[0])
+                    import urllib.request, json as _json
+                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/json/version', timeout=3) as resp:
+                        meta = _json.loads(resp.read().decode('utf-8'))
+                        ws = meta.get('webSocketDebuggerUrl')
+                        if ws:
+                            print(_json.dumps({"ws": ws}))
+                            sys.stdout.flush()
+            except Exception as e:
+                logger.warning(f"Could not resolve DevTools WS: {e}")
+
+        # Navigate to startup URL with human-like behavior (fallback if none)
+        urls = PROFILE_CONFIG.get('startup_urls') or []
+        test_url = urls[0] if urls else 'https://www.google.com'
         logger.info(f"Profile {profile_idx}: Navigating to {test_url}")
-        
-        # Start with a neutral page to warm up
-        driver.get("https://example.com")
-        time.sleep(random.uniform(2, 4))
-        
-        # Then go to the target URL
         driver.get(test_url)
         time.sleep(random.uniform(3, 5))
         
@@ -810,24 +822,35 @@ def launch_single_profile_ui_mode():
             return False
     
     # Launch with enhanced anti-detection
+    logger.info(f"Launching enhanced profile: {profile_name}")
     driver, idx = launch_profile_enhanced(profile_name, 1, config)
     
     if driver:
-        logger.info(f"✅ Profile '{profile_name}' launched successfully!")
-        
-        # Keep the browser open
+        logger.info(f"✅ Profile '{profile_name}' launched successfully! PID may not be visible; monitoring...")
+
+        # Keep the browser open with resilience to transient errors during startup
+        consecutive_errors = 0
         try:
             while True:
                 time.sleep(1)
                 try:
-                    current_url = driver.current_url
-                except:
-                    logger.info("🛑 Browser was closed")
+                    _ = driver.title  # lighter than current_url
+                    consecutive_errors = 0
+                except Exception:
+                    consecutive_errors += 1
+                    if consecutive_errors <= 10:
+                        # Allow up to ~10s of transient errors during startup
+                        continue
+                    logger.info("🛑 Browser appears to be closed (no response)")
                     break
         except KeyboardInterrupt:
             logger.info("🛑 Closing browser...")
-        
-        driver.quit()
+
+        # If the browser is already closed, this will raise; ignore
+        try:
+            driver.quit()
+        except Exception:
+            pass
         return True
     else:
         logger.error(f"❌ Failed to launch profile '{profile_name}'")
@@ -892,7 +915,7 @@ def main():
         logger.info("   - User Agent: Chrome Windows")
         logger.info("   - Language: English (en-US)")
         logger.info("   - Timezone: Europe/Berlin (Germany)")
-        logger.info("   - URL: https://httpbin.org/ip")
+        # Removed default URL reference
         logger.info("   - WebRTC: Disabled")
         logger.info("   - Enhanced Anti-Detection: Enabled")
         logger.info("")
