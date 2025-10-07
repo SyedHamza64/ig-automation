@@ -4,8 +4,8 @@ export type AccountRow = {
   id: number; 
   handle: string; 
   bulk_profile_name?: string | null;
-  adspower_profile_id?: string | null;
   health?: string | null;
+  instagram_username?: string | null;
   last_ws_puppeteer?: string | null;
   last_opened_at?: string | null;
 };
@@ -36,6 +36,27 @@ export const getAccountLimits = async (id: number) =>
 export const getLoginState = async (profile_id: number) => {
   const response = (await api.get(`/engine/login-state`, { params: { profile_id } })).data;
   return { state: response.login?.state || "unknown" };
+};
+
+export const syncUsername = async (accountId: number): Promise<{instagram_username: string | null, message: string}> => {
+  console.log(`[syncUsername] Syncing username for account ${accountId}`);
+  const response = await api.post(`/engine/sync-username?profile_id=${accountId}`);
+  console.log("[syncUsername] Response:", response.data);
+  return response.data;
+};
+
+export type BulkSyncResult = {
+  count: number;
+  updated: number;
+  results: Array<{ id: number; status: string; instagram_username?: string; error?: string; via?: string }>;
+};
+
+export const syncUsernamesBulk = async (accountIds: number[], concurrency = 5): Promise<BulkSyncResult> => {
+  const response = await api.post(`/engine/sync-usernames-bulk`, {
+    account_ids: accountIds,
+    concurrency,
+  });
+  return response.data as BulkSyncResult;
 };
 
 export const wsCheckProfile = async (profile_id: number) => 

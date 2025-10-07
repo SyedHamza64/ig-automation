@@ -45,6 +45,7 @@ export default function ActionsPage() {
     refetchInterval: 20000,
   });
 
+
   // Auto-select first account
   const selectedAccount = accounts.find(acc => acc.id === selectedAccountId);
   if (accounts.length > 0 && !selectedAccountId) {
@@ -55,39 +56,39 @@ export default function ActionsPage() {
   const followMutation = useMutation({
     mutationFn: followAction,
     onSuccess: (_, variables) => {
-      toast(`Action queued: follow on ${variables.usernames.join(", ")}`, "success");
+      toast.success(`Action queued: follow on ${variables.usernames.join(", ")}`);
       queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
     },
     onError: (error: any) => {
-      toast(`Error: ${error?.response?.data?.detail || error?.message || "Unknown error"}`, "error");
+      toast.error(`Error: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
     },
   });
 
   const unfollowMutation = useMutation({
     mutationFn: unfollowAction,
     onSuccess: (_, variables) => {
-      toast(`Action queued: unfollow on ${variables.usernames.join(", ")}`, "success");
+      toast.success(`Action queued: unfollow on ${variables.usernames.join(", ")}`);
       queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
     },
     onError: (error: any) => {
-      toast(`Error: ${error?.response?.data?.detail || error?.message || "Unknown error"}`, "error");
+      toast.error(`Error: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
     },
   });
 
   const likeRecentMutation = useMutation({
     mutationFn: likeRecentAction,
     onSuccess: (_, variables) => {
-      toast(`Action queued: like-recent on ${variables.usernames.join(", ")} (${variables.count} posts)`, "success");
+      toast.success(`Action queued: like-recent on ${variables.usernames.join(", ")} (${variables.count} posts)`);
       queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
     },
     onError: (error: any) => {
-      toast(`Error: ${error?.response?.data?.detail || error?.message || "Unknown error"}`, "error");
+      toast.error(`Error: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
     },
   });
 
   const handleSubmit = () => {
-    if (!selectedAccount || (!selectedAccount.bulk_profile_name && !selectedAccount.adspower_profile_id)) {
-      toast("Please select an account with a linked profile (bulkcreate or AdsPower)", "error");
+    if (!selectedAccount || !selectedAccount.bulk_profile_name) {
+      toast.error("Please select an account with a linked bulkcreate profile");
       return;
     }
 
@@ -97,7 +98,7 @@ export default function ActionsPage() {
       .filter(u => u.length > 0);
 
     if (usernameList.length === 0) {
-      toast("Please enter at least one username", "error");
+      toast.error("Please enter at least one username");
       return;
     }
 
@@ -118,7 +119,7 @@ export default function ActionsPage() {
         // Use streaming mass-follow with section filter
         const username = usernameList[0];
         if (!username) {
-          toast("Enter a single username for mass follow stream", "error");
+          toast.error("Enter a single username for mass follow stream");
           return;
         }
         setStreaming(true);
@@ -134,24 +135,24 @@ export default function ActionsPage() {
           try {
             const data = JSON.parse(e.data);
             if (data?.type === "start") {
-              toast(`Started mass follow on @${username} (${followSection})`, "success");
+              toast.success(`Started mass follow on @${username} (${followSection})`);
             }
             if (data?.type === "progress") {
               setProgress({ acted: data.acted ?? 0, processed: data.processed ?? 0, total: data.total ?? null });
             }
             if (data?.type === "done") {
-              toast(`Mass follow finished: ${data.reason}`, "success");
+              toast.success(`Mass follow finished: ${data.reason}`);
               es.close();
               setStreaming(false);
               queryClient.invalidateQueries({ queryKey: ["recent-logs"] });
             }
             if (data?.type === "error") {
-              toast(`Error: ${data.message}`, "error");
+              toast.error(`Error: ${data.message}`);
             }
           } catch {}
         };
         es.onerror = () => {
-          toast("Stream error", "error");
+          toast.error("Stream error");
           es.close();
           setStreaming(false);
         };
@@ -190,9 +191,7 @@ export default function ActionsPage() {
                     @{account.handle} {
                       account.bulk_profile_name 
                         ? `(Bulkcreate: ${account.bulk_profile_name})` 
-                        : account.adspower_profile_id 
-                          ? `(AdsPower: ${account.adspower_profile_id})` 
-                          : "(No Profile)"
+                        : "(No Profile)"
                     }
                   </option>
                 ))}
@@ -292,9 +291,9 @@ export default function ActionsPage() {
           <div>
             <button
               onClick={handleSubmit}
-              disabled={isLoading || streaming || !selectedAccount || (!selectedAccount.bulk_profile_name && !selectedAccount.adspower_profile_id)}
+              disabled={isLoading || streaming || !selectedAccount || !selectedAccount.bulk_profile_name}
               className={`px-4 py-2 rounded-md text-sm font-medium ${
-                isLoading || streaming || !selectedAccount || (!selectedAccount.bulk_profile_name && !selectedAccount.adspower_profile_id)
+                isLoading || streaming || !selectedAccount || !selectedAccount.bulk_profile_name
                   ? "bg-gray-300 dark:bg-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed"
                   : "bg-blue-600 dark:bg-blue-700 text-white hover:bg-blue-700 dark:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
               }`}
@@ -345,14 +344,23 @@ export default function ActionsPage() {
                       @{accountById.get(log.account_id)?.handle || "Unknown"}
                     </TD>
                     <TD>
-                      <span className={`rounded px-2 py-0.5 text-xs ${
-                        (log.action === 'like' || log.action === 'like_recent') ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
-                        log.action === 'follow' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
-                        log.action === 'unfollow' ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' :
-                        'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300'
-                      }`}>
-                        {String(log.action)}
-                      </span>
+                      {(() => {
+                        const payload = (log as any).payload || {};
+                        const result = payload.result || {};
+                        const mode = (payload.mode || result.mode || '').toLowerCase();
+                        const isMass = !!mode;
+                        const actionLabel = isMass ? (mode === 'unfollow' ? 'Mass Unfollow' : 'Mass Follow') : (String(log.action));
+                        const cls = (actionLabel.includes('Like') || log.action === 'like' || log.action === 'like_recent')
+                          ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+                          : (actionLabel.includes('Unfollow') || log.action === 'unfollow')
+                            ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                            : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300';
+                        return (
+                          <span className={`rounded px-2 py-0.5 text-xs ${cls}`}>
+                            {actionLabel}
+                          </span>
+                        );
+                      })()}
                     </TD>
                     <TD>
                       <span className={`rounded px-2 py-0.5 text-xs ${

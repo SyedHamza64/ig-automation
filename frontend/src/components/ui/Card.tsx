@@ -1,8 +1,17 @@
-import type { ReactNode } from "react";
+import { type ReactNode, forwardRef } from "react";
 
-export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-2xl border bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800 ${className}`}>{children}</div>;
-}
+export const Card = forwardRef<HTMLDivElement, { children: ReactNode; className?: string }>(
+  ({ children, className = "" }, ref) => {
+    return (
+      <div 
+        ref={ref}
+        className={`rounded-2xl border bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800 ${className}`}
+      >
+        {children}
+      </div>
+    );
+  }
+);
 
 export function CardHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (

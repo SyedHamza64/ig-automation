@@ -282,7 +282,7 @@ class CDPClient:
     async def eval(self, session_id: str, expression: str) -> Any:
         msg_id = await self._send(
             "Runtime.evaluate",
-            {"expression": expression, "returnByValue": True, "awaitPromise": False},
+            {"expression": expression, "returnByValue": True, "awaitPromise": True},
             session_id=session_id,
         )
         res = await self._recv_until_id(msg_id)
@@ -304,6 +304,67 @@ class CDPClient:
         """
         val = await self.eval(session_id, expr)
         return val or "unknown"
+
+    async def perform_single_follow_action(self, username: str, mode: str, section: str) -> Dict[str, Any]:
+        """Perform a single follow/unfollow action for limit=1 case"""
+        try:
+            # Get page session and navigate to the target profile
+            session_id = await self.get_page_session()
+            await self.goto(session_id, f"https://www.instagram.com/{username}/")
+            await asyncio.sleep(2)
+            
+            # Open the followers/following modal
+            if section == "followers":
+                modal_opened = await self.eval(session_id, """
+                    const followersBtn = document.querySelector('a[href*="/followers/"]');
+                    if (followersBtn) {
+                        followersBtn.click();
+                        return true;
+                    }
+                    return false;
+                """)
+            else:  # following
+                modal_opened = await self.eval(session_id, """
+                    const followingBtn = document.querySelector('a[href*="/following/"]');
+                    if (followingBtn) {
+                        followingBtn.click();
+                        return true;
+                    }
+                    return false;
+                """)
+            
+            await asyncio.sleep(2)
+            
+            # Find the first followable user
+            result = await self.eval(session_id, """
+                (() => {
+                    const buttons = document.querySelectorAll('button');
+                    for (let btn of buttons) {
+                        const text = btn.textContent?.trim();
+                        if (text === 'Follow' || text === 'Unfollow') {
+                            btn.click();
+                            return JSON.stringify({ success: true, action: text });
+                        }
+                    }
+                    return JSON.stringify({ success: false, error: 'no_follow_button_found' });
+                })()
+            """)
+            
+            await asyncio.sleep(1)
+            
+            # Parse the JSON result
+            if result and isinstance(result, str):
+                try:
+                    import json
+                    parsed_result = json.loads(result)
+                    return parsed_result
+                except:
+                    pass
+            
+            return {"success": False, "error": "no_follow_button_found"}
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 # -------------------- Action executors (CDP) --------------------
@@ -353,37 +414,46 @@ async def perform_mass_follow_stream(
 
     from .actions import CDPClient
 
+    stream_log.info(f"[mass_stream] start mode={mode} section={section} target={target_username} limit={limit} max_scrolls={max_scrolls} max_duration={max_duration_minutes}m")
+    effective_section = section
+    if mode == "follow" and section != "followers":
+        effective_section = "followers"
+    if mode == "unfollow" and section != "following":
+        effective_section = "following"
     async with CDPClient(ws_url) as cdp:
         sid = await cdp.get_page_session()
+        stream_log.info(f"[mass_stream] got session id: {sid}")
 
         # 1) Go to profile
         await cdp.goto(sid, f"https://www.instagram.com/{target_username}/", wait="domcontent")
+        stream_log.info(f"[mass_stream] navigated to profile: {target_username}")
         await asyncio.sleep(1.0)
 
         # 2) Open modal (href first, then header chip text)
-        open_modal_js = f"""
-        (function(){{
-          const sec = "{section}";
-          const u = "{target_username}".replace(/^@/,'').toLowerCase();
+        open_modal_js = r"""
+        (function(){
+          const sec = "__SECTION__";
+          const u = "__TARGET__".replace(/^@/,'').toLowerCase();
           const hrefNeedle = "/" + u + "/" + (sec==="followers" ? "followers/" : "following/");
           let link = Array.from(document.querySelectorAll('a[href]'))
               .find(a => (a.getAttribute('href')||'').toLowerCase().includes(hrefNeedle));
-          if(!link){{
+          if(!link){
             const scope = document.querySelector('header') || document;
             link = Array.from(scope.querySelectorAll('a,button,span,div'))
-              .find(n => {{
+              .find(n => {
                  const t = ((n.innerText||n.textContent)||"").toLowerCase();
-                 return (sec==='followers'?/\\bfollowers\\b/:/\\bfollowing\\b/).test(t);
-              }});
+                 return (sec==='followers'?/\bfollowers\b/:/\bfollowing\b/).test(t);
+              });
             if(link) link = link.closest('a,button,[role="link"]') || link;
-          }}
-          if(!link) return {{ok:false, reason:"link-not-found"}};
-          try{{ link.scrollIntoView({{block:'center'}}); }}catch(e){{}}
-          try{{ link.click(); }}catch(e){{ return {{ok:false, reason:"click-failed:"+e}}; }}
-          return {{ok:true}};
-        }})();
-        """
+          }
+          if(!link) return {ok:false, reason:"link-not-found"};
+          try{ link.scrollIntoView({block:'center'}); }catch(e){}
+          try{ link.click(); }catch(e){ return {ok:false, reason:"click-failed:"+e}; }
+          return {ok:true};
+        })();
+        """.replace("__SECTION__", effective_section).replace("__TARGET__", target_username)
         opened = await cdp.eval(sid, open_modal_js)
+        stream_log.info(f"[mass_stream] open modal result: {opened}")
         if not (isinstance(opened, dict) and opened.get("ok")):
             yield {"type":"done","reason":"modal_open_failed","detail":opened}
             return
@@ -522,6 +592,7 @@ async def perform_mass_follow_stream(
     })();
     """
         wired = await cdp.eval(sid, helpers)
+        stream_log.debug(f"[mass_stream] modal helpers wired: {wired}")
         if not (isinstance(wired, dict) and wired.get("ok")):
             yield {"type":"done","reason":"modal_setup_failed","detail":wired}
             return
@@ -541,46 +612,54 @@ async def perform_mass_follow_stream(
         # 5) Main loop
         while acted < limit and scrolls < max_scrolls and asyncio.get_event_loop().time() < deadline:
             # gather visible candidates; if few, scroll pre-emptively
-            vis = await cdp.eval(sid, f"(function(){{return window.__IG_GATHER__('{mode}',8);}})();")
+            vis = await cdp.eval(sid, f"(function(){{return window.__IG_GATHER__('{mode}',12);}})();")
+            stream_log.debug(f"[mass_stream] gather visible candidates: {vis}")
             if isinstance(vis, dict) and vis.get("count", 0) < 2:
                 s1 = await cdp.eval(sid, "(function(){return window.__IG_SCROLL_ADV__('burst');})();")
                 scrolls += 1
                 yield {"type":"scroll","strategy":"burst","count":scrolls,"detail":s1}
+                stream_log.debug(f"[mass_stream] preemptive scroll (burst), detail={s1}")
                 await asyncio.sleep(0.35 + random.random()*0.35)
 
             # try click next candidate
             click = await cdp.eval(sid, f"(function(){{return window.__IG_CLICK_NEXT__('{mode}');}})();")
             processed += 1
+            stream_log.info(f"[mass_stream] click result: {click}")
 
             if isinstance(click, dict) and click.get("ok"):
                 # for unfollow, confirm if needed
                 if click.get("unfollow"):
                     await asyncio.sleep(0.25 + random.random()*0.35)
                     _ = await cdp.eval(sid, "(function(){return window.__IG_CONFIRM_UNFOLLOW__();})();")
+                    stream_log.debug("[mass_stream] confirm unfollow attempted")
                     await asyncio.sleep(0.15 + random.random()*0.25)
 
-                # verify state change (don’t mark success unless button changed)
-                ver = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(arguments[0], '{mode}');}})();")  # some CDP clients allow arguments; if not, inlined below
-                # If your CDP eval doesn't support args, replace with inline verification:
-                ver = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(window.__lastRowClicked, '{mode}');}})();") if ver is None else ver  # keep compatibility
+                # verify state change (retry up to 3x for exact counts)
+                success = False
+                for _ in range(3):
+                    ver = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(arguments[0], '{mode}');}})();")
+                    if ver is None:
+                        ver = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(window.__lastRowClicked, '{mode}');}})();")
+                    stream_log.info(f"[mass_stream] verify result: {ver}")
+                    if isinstance(ver, dict) and ver.get("ok") and ver.get("changed"):
+                        success = True
+                        break
+                    await asyncio.sleep(0.4 + random.random()*0.4)
 
-                if isinstance(ver, dict) and ver.get("ok") and ver.get("changed"):
+                if success:
                     acted += 1
                     misses = 0
                     yield {"type":"action","mode":mode,"acted":acted,"processed":processed}
+                    stream_log.info(f"[mass_stream] action confirmed acted={acted} processed={processed}")
+                    if acted >= limit:
+                        yield {"type":"done","reason":"limit","acted":acted,"processed":processed,"scrolls":scrolls}
+                        stream_log.info(f"[mass_stream] done reason=limit acted={acted} processed={processed} scrolls={scrolls}")
+                        break
                     await asyncio.sleep(0.85 + random.random()*1.1)
                 else:
-                    # not changed yet → small wait, re-verify once
-                    await asyncio.sleep(0.4 + random.random()*0.4)
-                    ver2 = await cdp.eval(sid, f"(function(){{return window.__IG_VERIFY_ROW__(document.activeElement && document.activeElement.closest('li,div[role],div'), '{mode}');}})();")
-                    if isinstance(ver2, dict) and ver2.get("ok") and ver2.get("changed"):
-                        acted += 1
-                        misses = 0
-                        yield {"type":"action","mode":mode,"acted":acted,"processed":processed}
-                        await asyncio.sleep(0.8 + random.random()*0.9)
-                    else:
-                        # no change → we'll need more candidates; count as miss
-                        misses += 1
+                    # no change → we'll need more candidates; count as miss
+                    misses += 1
+                    stream_log.debug(f"[mass_stream] no change after verify; misses={misses}")
                 continue
 
             # no visible candidate → escalate scrolling strategy
@@ -589,6 +668,7 @@ async def perform_mass_follow_stream(
             s2 = await cdp.eval(sid, f"(function(){{return window.__IG_SCROLL_ADV__('{strategy}');}})();")
             scrolls += 1
             yield {"type":"scroll","strategy":strategy,"count":scrolls,"detail":s2}
+            stream_log.debug(f"[mass_stream] escalate scroll strategy={strategy} detail={s2}")
             await asyncio.sleep(0.45 + random.random()*0.55)
 
             # truly at bottom only if:
@@ -596,6 +676,7 @@ async def perform_mass_follow_stream(
             # - we've done multiple escalations with no growth
             if isinstance(s2, dict) and s2.get("atBottom") and s2.get("stalls", 0) >= 8:
                 yield {"type":"done","reason":"bottom_reached","acted":acted,"processed":processed,"scrolls":scrolls}
+                stream_log.info(f"[mass_stream] done reason=bottom_reached acted={acted} processed={processed} scrolls={scrolls}")
                 break
 
             # occasional dwell
@@ -606,6 +687,7 @@ async def perform_mass_follow_stream(
 
         reason = "limit" if acted >= limit else ("scrolls" if scrolls >= max_scrolls else ("time" if asyncio.get_event_loop().time() >= deadline else "complete"))
         yield {"type":"done","reason":reason,"acted":acted,"processed":processed,"scrolls":scrolls}
+        stream_log.info(f"[mass_stream] done reason={reason} acted={acted} processed={processed} scrolls={scrolls}")
 
 
 async def perform_unfollow(ws_url: str, usernames: List[str]) -> Dict[str, Any]:

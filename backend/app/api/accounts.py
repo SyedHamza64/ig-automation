@@ -83,7 +83,7 @@ def delete_unlinked_accounts(db: Session = Depends(get_db)):
         # Find accounts that don't have profile connections
         unlinked_accounts = db.query(Account).filter(
             Account.bulk_profile_name.is_(None),
-            Account.adspower_profile_id.is_(None)
+            True  # No AdsPower profiles to filter
         ).all()
         
         if not unlinked_accounts:
@@ -125,7 +125,7 @@ def delete_unlinked_accounts_v2(db: Session = Depends(get_db)):
         # Find accounts that don't have profile connections
         unlinked_accounts = db.query(Account).filter(
             Account.bulk_profile_name.is_(None),
-            Account.adspower_profile_id.is_(None)
+            True  # No AdsPower profiles to filter
         ).all()
         
         if not unlinked_accounts:
@@ -162,10 +162,10 @@ def delete_unlinked_accounts_v2(db: Session = Depends(get_db)):
 # Get accounts without profile connections
 @router.get("/unlinked", dependencies=[Depends(require_admin)])
 def get_unlinked_accounts(db: Session = Depends(get_db)):
-    """Get all accounts that don't have profile connections (no bulk_profile_name or adspower_profile_id)"""
+    """Get all accounts that don't have profile connections (no bulk_profile_name)"""
     unlinked_accounts = db.query(Account).filter(
         Account.bulk_profile_name.is_(None),
-        Account.adspower_profile_id.is_(None)
+        True  # No AdsPower profiles to filter
     ).all()
     
     return {
@@ -176,7 +176,6 @@ def get_unlinked_accounts(db: Session = Depends(get_db)):
                 "handle": acc.handle, 
                 "status": acc.status,
                 "bulk_profile_name": acc.bulk_profile_name,
-                "adspower_profile_id": acc.adspower_profile_id,
                 "created_at": acc.created_at.isoformat() if acc.created_at else None
             } 
             for acc in unlinked_accounts
@@ -226,7 +225,7 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
 @router.get("/", response_model=List[Dict[str, Any]])
 def list_accounts(
     db: Session = Depends(get_db),
-    q: Optional[str] = Query(None, description="search by handle prefix"),
+    search: Optional[str] = Query(None, description="search by handle prefix"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -235,14 +234,14 @@ def list_accounts(
         Account.id,
         Account.handle,
         Account.bulk_profile_name,
-        Account.adspower_profile_id,
         Account.health,
+        Account.instagram_username,
         Account.last_ws_puppeteer,
         Account.last_opened_at
     )
     
-    if q:
-        query = query.filter(Account.handle.ilike(f"{q}%"))
+    if search:
+        query = query.filter(Account.handle.ilike(f"{search}%"))
     
     rows = query.order_by(Account.id.desc()).offset(offset).limit(limit).all()
     
@@ -251,8 +250,8 @@ def list_accounts(
             "id": row.id,
             "handle": row.handle,
             "bulk_profile_name": row.bulk_profile_name,
-            "adspower_profile_id": row.adspower_profile_id,
             "health": row.health,
+            "instagram_username": row.instagram_username,
             "last_ws_puppeteer": row.last_ws_puppeteer,
             "last_opened_at": row.last_opened_at
         }
@@ -409,17 +408,6 @@ def get_account_limits_status(
     }
 
 
-@router.get("/{account_id}/adspower", tags=["profiles"])
-def account_adspower_info(account_id: int, db: Session = Depends(get_db)):
-    acc: Optional[Account] = db.query(Account).get(account_id)
-    if not acc:
-        raise HTTPException(status_code=404, detail="account not found")
-    if not acc.profile_id:
-        raise HTTPException(status_code=400, detail="account has no profile_id linked")
-
-    client = AdsPowerClient()
-    info = client.get_profile_info(str(acc.profile_id))
-    return {"account_id": acc.id, "profile_id": acc.profile_id, "adspower": info}
 
 
 # Orphaned link detection and cleanup endpoints

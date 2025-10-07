@@ -1,4 +1,5 @@
 import axios from "axios";
+import { handleApiError, isRetryableError, retryWithBackoff } from "../utils/errorHandler";
 
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000",
@@ -19,13 +20,29 @@ if (DEV_JWT && !localStorage.getItem("jwt")) {
 
 // Opportunistic auto-login (runs on first request if no token)
 let loginPromise: Promise<string | undefined> | null = null;
+
+// Check if JWT token is expired
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    const now = Math.floor(Date.now() / 1000);
+    return payload.exp < now;
+  } catch {
+    return true; // If we can't parse, consider it expired
+  }
+}
+
 async function ensureToken(forceLogin = false): Promise<string | undefined> {
   const existing = (localStorage.getItem("jwt") ?? undefined) || (forceLogin ? undefined : DEV_JWT);
-  if (existing) return existing as string;
+  
+  // Check if existing token is expired
+  if (existing && !isTokenExpired(existing) && !forceLogin) {
+    return existing as string;
+  }
 
   // Prefer env creds, else fall back to known dev creds provided by the user
-  const email = DEV_EMAIL || "admin@example.com";
-  const password = DEV_PASSWORD || "admin123";
+  const email = DEV_EMAIL || import.meta.env.VITE_DEFAULT_ADMIN_EMAIL || "admin@example.com";
+  const password = DEV_PASSWORD || import.meta.env.VITE_DEFAULT_ADMIN_PASSWORD || "admin123";
 
   // Use a bare client without interceptors to avoid recursion
   const bootstrap = axios.create({ baseURL: api.defaults.baseURL });
@@ -48,11 +65,14 @@ api.interceptors.request.use(async (config) => {
   // Reuse in-flight login to prevent parallel logins
   const tokenInStorage = (localStorage.getItem("jwt") ?? undefined) || DEV_JWT;
   let token: string | undefined = tokenInStorage;
-  if (!token) {
+  
+  // Check if token is expired and get a new one if needed
+  if (!token || isTokenExpired(token)) {
     loginPromise = loginPromise || ensureToken();
     token = await loginPromise;
     loginPromise = null;
   }
+  
   if (token) {
     (config.headers as Record<string, string>).Authorization = `Bearer ${token}`;
   }
@@ -65,6 +85,7 @@ api.interceptors.response.use(
   async (err) => {
     const status = err?.response?.status;
     const original: any = err?.config || {};
+    
     if (status === 401) {
       // clear invalid token and attempt a single silent re-login + retry
       try { localStorage.removeItem("jwt"); } catch {}
@@ -78,7 +99,21 @@ api.interceptors.response.use(
         }
       }
     }
-    console.error("API error:", status, err?.response?.data);
+    
+    // Handle retryable errors
+    if (isRetryableError(err) && !original._retry && original.method?.toLowerCase() === 'get') {
+      original._retry = true;
+      try {
+        return await retryWithBackoff(() => api.request(original), 2, 1000);
+      } catch (retryError) {
+        // If retry fails, fall through to normal error handling
+      }
+    }
+    
+    // Log and handle the error
+    const errorMessage = handleApiError(err, `API ${original.method?.toUpperCase()} ${original.url}`);
+    console.error("API error:", errorMessage);
+    
     return Promise.reject(err);
   }
 );

@@ -13,8 +13,8 @@ class Account(Base):
     
     # Profile information (merged from Profile model)
     bulk_profile_name = Column(String, unique=True, nullable=True, index=True)
-    adspower_profile_id = Column(String, unique=True, nullable=True, index=True)  # legacy
     health = Column(String, default="unknown")  # unknown | ok | warn | error
+    instagram_username = Column(String, nullable=True)  # Extracted from Instagram profile
     last_opened_at = Column(TIMESTAMP(timezone=True))
     last_ws_puppeteer = Column(String, nullable=True)  # e.g. ws://127.0.0.1:55xxx/devtools/browser/....
     last_ws_selenium = Column(String, nullable=True)  # e.g. 127.0.0.1:55xxx

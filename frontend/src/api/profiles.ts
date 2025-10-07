@@ -4,7 +4,6 @@ export type ProfileRow = {
   id: number;
   account_id: number | null;
   account_handle: string | null;
-  adspower_profile_id: string | null; // Made nullable for bulkcreate profiles
   bulk_profile_name: string | null; // New field for bulkcreate profiles
   health: string | null;
   last_ws_puppeteer: string | null;
@@ -51,7 +50,8 @@ export const startWarmupStream = (profile_id: number | string, content: "home"|"
 
 // Bulkcreate-specific API functions
 export const listBulkcreateProfiles = async (): Promise<any> => {
-  const response = await fetch('http://127.0.0.1:4000/api/profiles');
+  const bulkcreateUrl = import.meta.env.VITE_BULKCREATE_SERVER_URL || 'http://127.0.0.1:4000';
+  const response = await fetch(`${bulkcreateUrl}/api/profiles`);
   return response.json();
 };
 

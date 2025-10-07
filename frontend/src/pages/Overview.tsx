@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getHealth } from "../api/health";
 import { listAccounts } from "../api/accounts";
 import { listRecentLogs, type ActionLog } from "../api/logs";
-import { listProfiles } from "../api/profiles";
+// import { listProfiles } from "../api/profiles";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Table, THead, TBody, TH, TD } from "../components/ui/Table";
 
@@ -21,22 +21,21 @@ export default function Overview() {
     queryFn: () => listRecentLogs(20),
     refetchInterval: 15000,
   });
-  const qProfiles = useQuery({
-    queryKey: ["profiles"],
-    queryFn: listProfiles,
-    refetchInterval: 30000,
-  });
+  // const qProfiles = useQuery({
+  //   queryKey: ["profiles"],
+  //   queryFn: listProfiles,
+  //   refetchInterval: 30000,
+  // });
 
   const accounts = qAccounts.data || [];
   const logs = qLogs.data || [];
-  const profiles = qProfiles.data || [];
+  // const profiles = qProfiles.data || [];
 
   const successRecent = logs.filter((l) => l.status === "success").length;
   
-  // Profile statistics
-  const bulkcreateProfiles = profiles.filter((p) => !!p.bulk_profile_name).length;
-  const adspowerProfiles = profiles.filter((p) => !!p.adspower_profile_id).length;
-  const linkedProfiles = profiles.filter((p) => !!p.account_id).length;
+  // Profile statistics (derive from accounts since profiles were merged)
+  const bulkcreateProfiles = accounts.filter((a: any) => !!a.bulk_profile_name).length;
+  const linkedProfiles = accounts.filter((a: any) => !!a.bulk_profile_name).length;
 
   return (
     <div className="space-y-6">
@@ -56,11 +55,6 @@ export default function Overview() {
           title="Bulkcreate Profiles"
           value={bulkcreateProfiles}
           subtitle="Enhanced automation"
-        />
-        <StatCard
-          title="AdsPower Profiles"
-          value={adspowerProfiles}
-          subtitle="Legacy profiles"
         />
         <StatCard
           title="Linked Profiles"
@@ -98,7 +92,7 @@ export default function Overview() {
                   <tr key={l.id}>
                     <TD>{fmt(l.created_at)}</TD>
                     <TD>#{l.account_id}</TD>
-                    <TD>{labelAction(l.action)}</TD>
+                    <TD>{labelActionWithPayload(l)}</TD>  
                     <TD>
                       <span
                         className={`rounded px-2 py-0.5 text-xs ${
@@ -168,6 +162,16 @@ function labelAction(a?: string) {
   if (norm === "unfollow") return "Unfollow";
   if (norm === "follow") return "Follow";
   return a;
+}
+
+function labelActionWithPayload(l: any) {
+  // If payload.result.mode or payload.mode exists, this is a streaming job
+  const payload = (l as any).payload || {};
+  const result = payload.result || {};
+  const mode = (payload.mode || result.mode || l.action || "").toLowerCase();
+  if (mode === "follow") return "Mass Follow";
+  if (mode === "unfollow") return "Mass Unfollow";
+  return labelAction(l.action);
 }
 
 function formatResult(l: ActionLog): string {

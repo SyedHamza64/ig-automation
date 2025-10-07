@@ -1,80 +1,153 @@
-import { useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useCallback } from 'react';
 
-export type ToastType = "success" | "error" | "info";
-
-export type Toast = {
+export interface Toast {
   id: string;
   message: string;
-  type: ToastType;
-};
+  type: 'success' | 'error' | 'warning' | 'info';
+  duration?: number;
+}
 
-// Simple toast context and hook
-let toastCallbacks: ((toast: Toast) => void)[] = [];
+interface ToastContextType {
+  toasts: Toast[];
+  addToast: (message: string, type?: Toast['type'], duration?: number) => void;
+  removeToast: (id: string) => void;
+  success: (message: string) => void;
+  error: (message: string) => void;
+  warning: (message: string) => void;
+  info: (message: string) => void;
+}
 
-export const toast = (message: string, type: ToastType = "info") => {
-  const id = Math.random().toString(36).substr(2, 9);
-  const newToast: Toast = { id, message, type };
-  
-  // Call all registered callbacks
-  toastCallbacks.forEach(callback => callback(newToast));
-};
+const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
 export const useToast = () => {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-
-  useEffect(() => {
-    const handleToast = (toast: Toast) => {
-      setToasts(prev => [...prev, toast]);
-      
-      // Auto-remove after 5 seconds
-      setTimeout(() => {
-        setToasts(prev => prev.filter(t => t.id !== toast.id));
-      }, 5000);
-    };
-
-    toastCallbacks.push(handleToast);
-
-    return () => {
-      toastCallbacks = toastCallbacks.filter(cb => cb !== handleToast);
-    };
-  }, []);
-
-  const removeToast = (id: string) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
-  };
-
-  return { toasts, removeToast };
+  const context = useContext(ToastContext);
+  if (!context) {
+    throw new Error('useToast must be used within a ToastProvider');
+  }
+  return context;
 };
 
-export function ToastContainer() {
-  const { toasts, removeToast } = useToast();
+// Global toast functions for use outside of React components
+let globalToastContext: ToastContextType | null = null;
 
+export const setGlobalToastContext = (context: ToastContextType) => {
+  globalToastContext = context;
+};
+
+export const toast = {
+  success: (message: string) => globalToastContext?.success(message),
+  error: (message: string) => globalToastContext?.error(message),
+  warning: (message: string) => globalToastContext?.warning(message),
+  info: (message: string) => globalToastContext?.info(message),
+};
+
+export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const addToast = useCallback((message: string, type: Toast['type'] = 'info', duration = 5000) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    const toast: Toast = { id, message, type, duration };
+    
+    setToasts(prev => [...prev, toast]);
+    
+    if (duration > 0) {
+      setTimeout(() => removeToast(id), duration);
+    }
+  }, []);
+
+  const removeToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(toast => toast.id !== id));
+  }, []);
+
+  const success = useCallback((message: string) => addToast(message, 'success'), [addToast]);
+  const error = useCallback((message: string) => addToast(message, 'error'), [addToast]);
+  const warning = useCallback((message: string) => addToast(message, 'warning'), [addToast]);
+  const info = useCallback((message: string) => addToast(message, 'info'), [addToast]);
+
+  const contextValue = { toasts, addToast, removeToast, success, error, warning, info };
+  
+  // Set global context for use outside of React components
+  React.useEffect(() => {
+    setGlobalToastContext(contextValue);
+  }, [contextValue]);
+
+  return (
+    <ToastContext.Provider value={contextValue}>
+      {children}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
+    </ToastContext.Provider>
+  );
+};
+
+const ToastContainer: React.FC<{ toasts: Toast[]; onRemove: (id: string) => void }> = ({ toasts, onRemove }) => {
   if (toasts.length === 0) return null;
 
   return (
     <div className="fixed top-4 right-4 z-50 space-y-2">
-      {toasts.map((toast) => (
-        <div
-          key={toast.id}
-          className={`max-w-sm rounded-lg border p-4 shadow-lg ${
-            toast.type === "success" 
-              ? "border-green-200 bg-green-50 text-green-800"
-              : toast.type === "error"
-              ? "border-red-200 bg-red-50 text-red-800"
-              : "border-blue-200 bg-blue-50 text-blue-800"
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">{toast.message}</span>
-            <button
-              onClick={() => removeToast(toast.id)}
-              className="ml-2 text-gray-400 hover:text-gray-600"
-            >
-              ×
-            </button>
-          </div>
-        </div>
+      {toasts.map(toast => (
+        <ToastItem key={toast.id} toast={toast} onRemove={onRemove} />
       ))}
     </div>
   );
-}
+};
+
+const ToastItem: React.FC<{ toast: Toast; onRemove: (id: string) => void }> = ({ toast, onRemove }) => {
+  const getToastStyles = (type: Toast['type']) => {
+    switch (type) {
+      case 'success':
+        return 'bg-green-500 text-white border-green-600';
+      case 'error':
+        return 'bg-red-500 text-white border-red-600';
+      case 'warning':
+        return 'bg-yellow-500 text-white border-yellow-600';
+      case 'info':
+        return 'bg-blue-500 text-white border-blue-600';
+      default:
+        return 'bg-gray-500 text-white border-gray-600';
+    }
+  };
+
+  const getIcon = (type: Toast['type']) => {
+    switch (type) {
+      case 'success':
+        return '✓';
+      case 'error':
+        return '✕';
+      case 'warning':
+        return '⚠';
+      case 'info':
+        return 'ℹ';
+      default:
+        return '•';
+    }
+  };
+
+  return (
+    <div
+      className={`
+        max-w-sm w-full shadow-lg rounded-lg border-l-4 p-4
+        transform transition-all duration-300 ease-in-out
+        ${getToastStyles(toast.type)}
+        animate-in slide-in-from-right-full
+      `}
+    >
+      <div className="flex items-start">
+        <div className="flex-shrink-0">
+          <span className="text-lg font-bold">{getIcon(toast.type)}</span>
+        </div>
+        <div className="ml-3 w-0 flex-1">
+          <p className="text-sm font-medium">{toast.message}</p>
+        </div>
+        <div className="ml-4 flex-shrink-0 flex">
+          <button
+            className="inline-flex text-white hover:text-gray-200 focus:outline-none"
+            onClick={() => onRemove(toast.id)}
+          >
+            <span className="sr-only">Close</span>
+            <span className="text-lg">×</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

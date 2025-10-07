@@ -17,6 +17,8 @@ from app.api.profiles import router as profiles_router
 from app.api.engine import router as engine_router
 from app.api.logs import router as logs_router
 from app.api.actions import router as actions_router
+from app.core.database_health import validate_database_on_startup
+from app.core.config import settings
 
 dictConfig({
     "version": 1,
@@ -41,12 +43,7 @@ app = FastAPI(title="IG Automation API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-    ],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,3 +60,11 @@ app.include_router(targets_router,      prefix="/targets",      tags=["targets"]
 app.include_router(engine_router,       prefix="/engine",       tags=["engine"])
 app.include_router(actions_router,                              tags=["actions"])
 app.include_router(logs_router,         prefix="/logs",         tags=["logs"])
+
+# Validate database schema on startup
+@app.on_event("startup")
+async def startup_event():
+    if settings.ENABLE_DATABASE_HEALTH_CHECK:
+        validate_database_on_startup()
+    else:
+        logger.info("Database health check disabled by configuration")

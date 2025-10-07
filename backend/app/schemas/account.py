@@ -20,7 +20,6 @@ class AccountCreate(AccountBase):
 class AccountUpdate(BaseModel):
     username: Optional[str] = Field(None, alias="handle")
     bulk_profile_name: Optional[str] = None
-    adspower_profile_id: Optional[str] = None
     health: Optional[str] = None
     last_ws_puppeteer: Optional[str] = None
     last_ws_selenium: Optional[str] = None

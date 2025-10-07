@@ -4,16 +4,46 @@ from dotenv import load_dotenv
 import os
 
 class Settings(BaseSettings):
+    # Database settings
     POSTGRES_DB: str
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_HOST: str = "127.0.0.1"
     POSTGRES_PORT: int = 5432
 
+    # Application settings
     SECRET_KEY: str = "change_me"
     APP_PORT: int = 8000
-    ADSPOWER_BASE_URL: str = "http://127.0.0.1:50325"
     TZ: str = "Asia/Karachi"
+    
+    # External service URLs
+    ADSPOWER_BASE_URL: str = "http://127.0.0.1:50325"
+    BULKCREATE_SERVER_URL: str = "http://127.0.0.1:4000"
+    
+    # Authentication settings
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+    JWT_ALGORITHM: str = "HS256"
+    
+    # Default admin credentials (for development)
+    DEFAULT_ADMIN_EMAIL: str = "admin@example.com"
+    DEFAULT_ADMIN_PASSWORD: str = "admin123"
+    
+    # CORS settings
+    CORS_ORIGINS: list = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+    
+    # Logging settings
+    LOG_LEVEL: str = "INFO"
+    LOG_FILE: str = "app.log"
+    
+    # Feature flags
+    ENABLE_DATABASE_HEALTH_CHECK: bool = True
+    ENABLE_AUTO_LOGIN: bool = True
+    ENABLE_DEBUG_MODE: bool = False
 
     class Config:
         env_file = ".env"

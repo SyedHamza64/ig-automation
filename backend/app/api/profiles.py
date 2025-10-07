@@ -283,32 +283,41 @@ def attach_bulk_profile(
     db: Session = Depends(get_db),
 ):
     try:
+        logger.info(f"attach-bulk called with account_id={account_id}, bulk_profile_name='{bulk_profile_name}', force={force}")
         name = (bulk_profile_name or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="bulk_profile_name required")
 
         # If linking to an account, update the Account model directly
         if account_id is not None:
+            logger.info(f"Looking up account with id={account_id}")
             acc = db.query(Account).get(account_id)
             if not acc:
+                logger.error(f"Account with id={account_id} not found")
                 raise HTTPException(status_code=404, detail="account not found")
 
+            logger.info(f"Found account: {acc.handle}, current bulk_profile_name='{acc.bulk_profile_name}'")
+
             # Check if account already has a profile linked
-            if (acc.bulk_profile_name or acc.adspower_profile_id) and not force:
+            if acc.bulk_profile_name and not force:
+                logger.warning(f"Account {account_id} already linked to profile, force={force}")
                 raise HTTPException(status_code=409, detail=f"account_id {account_id} already linked to profile; pass force=true to swap")
 
             # Check if bulk_profile_name is already used by another account
             existing_account = db.query(Account).filter(Account.bulk_profile_name == name).first()
             if existing_account and existing_account.id != account_id:
+                logger.warning(f"bulk_profile_name '{name}' already attached to account_id={existing_account.id}")
                 raise HTTPException(status_code=409, detail=f"bulk_profile_name '{name}' already attached to account_id={existing_account.id}")
 
             # Update the account with the bulk profile name
+            logger.info(f"Updating account {account_id} with bulk_profile_name='{name}'")
             acc.bulk_profile_name = name
             acc.health = "unknown"
             db.add(acc)
             db.commit()
             db.refresh(acc)
 
+            logger.info(f"Successfully linked account {account_id} to bulk profile '{name}'")
             return {
                 "id": acc.id,
                 "account_id": acc.id,
@@ -317,6 +326,7 @@ def attach_bulk_profile(
             }
         else:
             # No account specified: just return the bulk profile name
+            logger.info(f"No account specified, returning bulk profile name '{name}'")
             return {
                 "id": None,
                 "account_id": None,
@@ -325,8 +335,8 @@ def attach_bulk_profile(
             }
     except HTTPException:
         raise
-    except Exception:
-        logger.exception("attach-bulk failed")
+    except Exception as e:
+        logger.exception(f"attach-bulk failed with error: {str(e)}")
         raise HTTPException(status_code=500, detail="attach-bulk failed; see server logs")
 
 # ---------- CLOSE ----------

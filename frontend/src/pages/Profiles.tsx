@@ -1,17 +1,16 @@
 import React, { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listProfiles, getLoginState, listBulkcreateProfiles, attachBulkProfile, startWarmupStream } from "../api/profiles";
-import { listAccounts, createAccount, createBulkAccounts, getUnlinkedAccounts, deleteAccount, detectOrphanedLinks, cleanupOrphanedLinks, cleanupSelectedOrphanedLinks, updateAutoCleanupSettings, type AccountRow } from "../api/accounts";
+import { listAccounts, createAccount, createBulkAccounts, getUnlinkedAccounts, deleteAccount, detectOrphanedLinks, cleanupOrphanedLinks, cleanupSelectedOrphanedLinks, updateAutoCleanupSettings, type AccountRow, syncUsernamesBulk, syncUsername } from "../api/accounts";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
+import { useWarmupProgress } from "../contexts/WarmupProgressContext";
 
 type Tab = "linked" | "unlinked" | "all" | "bulkcreate" | "accounts";
 
-// Simple toast helper (non-blocking)
-function toast(msg: string) { 
-  console.log("[toast]", msg); 
-}
+import { toast } from "../components/ui/Toast";
 
 export default function ProfilesPage() {
+  
   const { isLoading, isError, isFetching } = useQuery({
     queryKey: ["profiles"],
     queryFn: listProfiles,
@@ -41,6 +40,8 @@ export default function ProfilesPage() {
   const [showCreateAccount, setShowCreateAccount] = useState(false);
   const [showLinkProfile, setShowLinkProfile] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<[number, number] | null>(null);
 
   
   // Delete account mutation
@@ -49,12 +50,12 @@ export default function ProfilesPage() {
   const deleteAccountMutation = useMutation({
     mutationFn: (accountId: number) => deleteAccount(accountId),
     onSuccess: () => {
-      toast("Account deleted successfully!");
+      toast.success("Account deleted successfully!");
       queryClient.invalidateQueries({ queryKey: ["accounts"] });
       queryClient.invalidateQueries({ queryKey: ["unlinked-accounts"] });
     },
     onError: (error) => {
-      toast(`Error deleting account: ${error.message}`);
+      toast.error(`Error deleting account: ${error.message}`);
     }
   });
   
@@ -62,14 +63,13 @@ export default function ProfilesPage() {
   const accountRows = accounts || [];
   
   const counts = useMemo(() => {
-    const linked = accountRows.filter((r) => !!r.bulk_profile_name || !!r.adspower_profile_id).length;
+    const linked = accountRows.filter((r) => !!r.bulk_profile_name).length;
     const bulkcreate = accountRows.filter((r) => !!r.bulk_profile_name).length;
-    const adspower = accountRows.filter((r) => !!r.adspower_profile_id).length;
-    return { total: accountRows.length, linked, unlinked: accountRows.length - linked, bulkcreate, adspower };
+    return { total: accountRows.length, linked, unlinked: accountRows.length - linked, bulkcreate };
   }, [accountRows]);
 
   // Collect all errors from login state queries
-  const [errors, setErrors] = useState<Array<{id: number, error: string, adspower_id: string | null, account_handle?: string}>>([]);
+  const [errors, setErrors] = useState<Array<{id: number, error: string, account_handle?: string}>>([]);
 
   const handleError = (id: number, error: string) => {
     console.log(`[DEBUG] Error detected for profile ${id}:`, error);
@@ -83,7 +83,6 @@ export default function ProfilesPage() {
           return [...prev, { 
             id, 
             error, 
-            adspower_id: account.adspower_profile_id || null,
             account_handle: account.handle || undefined
           }];
         }
@@ -93,14 +92,13 @@ export default function ProfilesPage() {
 
   const filtered = useMemo(() => {
     let r = accountRows;
-    if (tab === "linked") r = r.filter((x) => !!x.bulk_profile_name || !!x.adspower_profile_id);
-    if (tab === "unlinked") r = r.filter((x) => !x.bulk_profile_name && !x.adspower_profile_id);
+    if (tab === "linked") r = r.filter((x) => !!x.bulk_profile_name);
+    if (tab === "unlinked") r = r.filter((x) => !x.bulk_profile_name);
     if (tab === "bulkcreate") r = r.filter((x) => !!x.bulk_profile_name);
     if (q.trim()) {
       const s = q.trim().toLowerCase();
       r = r.filter(
         (x) =>
-          x.adspower_profile_id?.toLowerCase().includes(s) ||
           x.bulk_profile_name?.toLowerCase().includes(s) ||
           x.handle?.toLowerCase().includes(s)
       );
@@ -118,20 +116,44 @@ export default function ProfilesPage() {
         <Stat title="Linked" value={counts.linked} />
         <Stat title="Unlinked" value={counts.unlinked} />
             <Stat title="Bulkcreate" value={counts.bulkcreate} />
-            <Stat title="AdsPower" value={counts.adspower} />
             <div className="flex items-end justify-end gap-2">
           <button
                 onClick={() => setShowCreateAccount(true)}
-                className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
               >
-                Create Account
+                New Account
               </button>
               <button
-                onClick={() => setShowLinkProfile(true)}
-                className="rounded-md bg-green-600 px-3 py-2 text-sm text-white hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600"
+                onClick={async () => {
+                  if (syncingAll) return;
+                  if (!Array.isArray(accounts)) return;
+                  setSyncingAll(true);
+                  setSyncProgress([0, accounts.length]);
+                  try {
+                    const res = await syncUsernamesBulk(accounts.map(a => a.id), 5);
+                    queryClient.setQueryData(["accounts"], (old: any) => {
+                      if (!Array.isArray(old)) return old;
+                      const idToUsername = new Map<number, string>();
+                      for (const r of res.results) {
+                        if (r.status === 'ok' && r.instagram_username) {
+                          idToUsername.set(r.id, r.instagram_username);
+                        }
+                      }
+                      return old.map((a: any) => idToUsername.has(a.id) ? { ...a, instagram_username: idToUsername.get(a.id) } : a);
+                    });
+                    setSyncProgress([res.updated, res.count]);
+                  } finally {
+                    setTimeout(() => {
+                      setSyncingAll(false);
+                      setSyncProgress(null);
+                    }, 400);
+                  }
+                }}
+                disabled={syncingAll}
+                className={`rounded-md px-4 py-2 text-sm text-white ${syncingAll ? 'bg-green-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600'}`}
               >
-                Link Profile
-          </button>
+                {syncingAll && syncProgress ? `Syncing ${syncProgress[0]}/${syncProgress[1]}...` : 'Sync All Usernames'}
+              </button>
         </div>
       </div>
 
@@ -141,7 +163,7 @@ export default function ProfilesPage() {
           onClose={() => setShowCreateAccount(false)}
           onSuccess={() => {
             setShowCreateAccount(false);
-            toast("Account created successfully!");
+            toast.success("Account created successfully!");
           }}
         />
       )}
@@ -154,7 +176,7 @@ export default function ProfilesPage() {
           onClose={() => setShowLinkProfile(false)}
           onSuccess={() => {
             setShowLinkProfile(false);
-            toast("Profile linked successfully!");
+            toast.success("Profile linked successfully!");
           }}
         />
       )}
@@ -304,7 +326,6 @@ export default function ProfilesPage() {
               {errors.slice(0, 10).map((err) => (
                 <div key={err.id} className="flex items-center justify-between rounded-md bg-red-50 p-3 dark:bg-red-900/20">
                   <div className="flex items-center gap-3">
-                    <code className="text-xs text-red-600 dark:text-red-400">{err.adspower_id}</code>
                     {err.account_handle && (
                       <span className="text-sm text-red-700 dark:text-red-300">@{err.account_handle}</span>
                     )}
@@ -421,12 +442,12 @@ function DeleteUnlinkedAccountsButton() {
       };
     },
     onSuccess: (result) => {
-      toast(result.message);
+      toast.info(result.message);
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["unlinked-accounts"] });
     },
     onError: (error) => {
-      toast(`Error deleting accounts: ${error.message}`);
+      toast.error(`Error deleting accounts: ${error.message}`);
     }
   });
 
@@ -469,12 +490,12 @@ function CreateAccountModal({ onClose, onSuccess }: { onClose: () => void; onSuc
       return await createAccount(data.handle);
     },
     onSuccess: () => {
-      toast("Account created successfully!");
+      toast.success("Account created successfully!");
       qc.invalidateQueries({ queryKey: ["accounts"] });
       onSuccess();
     },
     onError: (error) => {
-      toast(`Error creating account: ${error.message}`);
+      toast.error(`Error creating account: ${error.message}`);
     }
   });
 
@@ -483,12 +504,12 @@ function CreateAccountModal({ onClose, onSuccess }: { onClose: () => void; onSuc
       return await createBulkAccounts(data.count, data.prefix);
     },
     onSuccess: (accounts) => {
-      toast(`Successfully created ${accounts.length} accounts!`);
+      toast.info(`Successfully created ${accounts.length} accounts!`);
       qc.invalidateQueries({ queryKey: ["accounts"] });
       onSuccess();
     },
     onError: (error) => {
-      toast(`Error creating accounts: ${error.message}`);
+      toast.info(`Error creating accounts: ${error.message}`);
     }
   });
 
@@ -505,7 +526,7 @@ function CreateAccountModal({ onClose, onSuccess }: { onClose: () => void; onSuc
       }
     } else {
       if (bulkCount < 1 || bulkCount > 100) {
-        toast("Please enter a count between 1 and 100");
+        toast.info("Please enter a count between 1 and 100");
         return;
       }
       setIsCreating(true);
@@ -648,7 +669,7 @@ function LinkProfileModal({
       onSuccess();
     },
     onError: (error) => {
-      toast(`Error: ${error.message}`);
+      toast.info(`Error: ${error.message}`);
     }
   });
 
@@ -844,7 +865,7 @@ function BulkcreateProfileManager({
   const linkedCount = linkedProfilesList.length;
 
   // Get available accounts (those without profiles)
-  const availableAccounts = accounts.filter(account => !account.bulk_profile_name && !account.adspower_profile_id);
+  const availableAccounts = accounts.filter(account => !account.bulk_profile_name);
   const availableAccountsCount = availableAccounts.length;
 
   // Create a map of bulk profile names to their linked account info
@@ -895,7 +916,7 @@ function BulkcreateProfileManager({
     const selectedUnlinkedProfiles = Array.from(selectedProfiles).filter(name => !linkedProfiles.has(name));
     
     if (selectedUnlinkedProfiles.length === 0) {
-      toast("No unlinked profiles selected for linking");
+      toast.info("No unlinked profiles selected for linking");
       return;
     }
 
@@ -907,7 +928,7 @@ function BulkcreateProfileManager({
 
     // For manual mode, require account selection
     if (linkMode === 'manual' && !selectedAccount) {
-      toast("Please select an account for manual linking");
+      toast.info("Please select an account for manual linking");
       return;
     }
     
@@ -934,9 +955,9 @@ function BulkcreateProfileManager({
       qc.invalidateQueries({ queryKey: ["accounts"] });
       setSelectedProfiles(new Set());
       setErrorMessage(null); // Clear any error message on success
-      toast(`Successfully linked ${selectedUnlinkedProfiles.length} profiles!`);
+      toast.info(`Successfully linked ${selectedUnlinkedProfiles.length} profiles!`);
     } catch (error) {
-      toast(`Error linking profiles: ${error instanceof Error ? error.message : String(error)}`);
+      toast.info(`Error linking profiles: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsLinking(false);
     }
@@ -949,7 +970,7 @@ function BulkcreateProfileManager({
     const selectedLinkedProfiles = Array.from(selectedProfiles).filter(name => linkedProfiles.has(name));
     
     if (selectedLinkedProfiles.length === 0) {
-      toast("No linked profiles selected for unlinking");
+      toast.info("No linked profiles selected for unlinking");
       return;
     }
     
@@ -964,7 +985,7 @@ function BulkcreateProfileManager({
         .filter(account => account.bulk_profile_name && selectedLinkedProfiles.includes(account.bulk_profile_name));
       
       if (accountsToUnlink.length === 0) {
-        toast("No linked accounts found to unlink");
+        toast.info("No linked accounts found to unlink");
         return;
       }
       
@@ -989,9 +1010,9 @@ function BulkcreateProfileManager({
       qc.invalidateQueries({ queryKey: ["profiles"] });
       qc.invalidateQueries({ queryKey: ["accounts"] });
       setSelectedProfiles(new Set());
-      toast(`Successfully unlinked ${accountsToUnlink.length} profiles!`);
+      toast.info(`Successfully unlinked ${accountsToUnlink.length} profiles!`);
     } catch (error) {
-      toast(`Error unlinking profiles: ${error instanceof Error ? error.message : String(error)}`);
+      toast.info(`Error unlinking profiles: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsLinking(false);
     }
@@ -1033,7 +1054,7 @@ function BulkcreateProfileManager({
                 }`}
               >
                 Auto
-              </button>
+      </button>
               <button
                 onClick={() => setLinkMode('manual')}
                 className={`px-3 py-1 text-xs ${
@@ -1091,7 +1112,7 @@ function BulkcreateProfileManager({
             {isLinking ? 'Unlinking...' : `Unlink ${selectedProfiles.size} Profiles`}
           </button>
         </div>
-      </div>
+          </div>
 
       {/* Error Message Card */}
       {errorMessage && (
@@ -1111,12 +1132,12 @@ function BulkcreateProfileManager({
                   {errorMessage}
                 </p>
                 <div className="mt-3">
-                  <button
+            <button 
                     onClick={() => setErrorMessage(null)}
                     className="text-sm font-medium text-red-800 hover:text-red-900 dark:text-red-200 dark:hover:text-red-100"
-                  >
+            >
                     Dismiss
-                  </button>
+            </button>
                 </div>
               </div>
             </div>
@@ -1215,11 +1236,14 @@ function AccountSidebarItem({
   onSelect: () => void;
   onDelete: () => void;
 }) {
-  const isUnlinked = !account.bulk_profile_name && !account.adspower_profile_id;
+  const isUnlinked = !account.bulk_profile_name;
   const [loginState, setLoginState] = useState<string | null>(null);
   const [isCheckingLogin, setIsCheckingLogin] = useState(false);
-  const [isWarmingUp, setIsWarmingUp] = useState(false);
-  const [warmupProgress, setWarmupProgress] = useState<string | null>(null);
+  const { startWarmup, updateWarmup, getWarmupByProfileId } = useWarmupProgress();
+  
+  // Check if this account is currently warming up
+  const currentWarmup = getWarmupByProfileId(account.id);
+  const isWarmingUp = !!currentWarmup && currentWarmup.status === 'running';
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1236,10 +1260,10 @@ function AccountSidebarItem({
     try {
       const result = await getLoginState(account.id);
       setLoginState(result.state);
-      toast(`Login state for @${account.handle}: ${result.state}`);
+      toast.info(`Login state for @${account.handle}: ${result.state}`);
     } catch (error) {
       setLoginState('error');
-      toast(`Error checking login state: ${error instanceof Error ? error.message : String(error)}`);
+      toast.info(`Error checking login state: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsCheckingLogin(false);
     }
@@ -1249,27 +1273,64 @@ function AccountSidebarItem({
     e.stopPropagation();
     if (isWarmingUp) return;
     
-    setIsWarmingUp(true);
-    setWarmupProgress("Starting warmup...");
-    
     try {
-      const eventSource = startWarmupStream(account.id, "reels", 90, 3);
+      const duration = 90; // 90 seconds
+      const eventSource = startWarmupStream(account.id, "reels", duration, 3);
+      
+      // Start the warmup in global progress
+      const warmupId = startWarmup(account.id, account.handle, account.id, duration, eventSource);
+      
+      // Start progress timer
+      const startTime = Date.now();
+      const progressTimer = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(100, (elapsed / (duration * 1000)) * 100);
+        const timeRemaining = Math.max(0, duration - (elapsed / 1000));
+        
+        updateWarmup(warmupId, {
+          progress,
+          timeRemaining,
+        });
+        
+        if (progress >= 100) {
+          clearInterval(progressTimer);
+        }
+      }, 1000);
       
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === 'progress') {
-            setWarmupProgress(`Warming up... ${data.message || 'In progress'}`);
+          if (data.type === 'start') {
+            updateWarmup(warmupId, {
+              currentAction: `Starting warmup: ${data.content} mode`,
+            });
+          } else if (data.type === 'phase_switch') {
+            updateWarmup(warmupId, {
+              currentAction: `Switching to ${data.to} feed...`,
+            });
+          } else if (data.type === 'progress') {
+            updateWarmup(warmupId, {
+              currentAction: data.message || 'Warming up...',
+            });
           } else if (data.type === 'done') {
-            setWarmupProgress(`Warmup completed: ${data.reason || 'Finished'}`);
+            clearInterval(progressTimer);
+            updateWarmup(warmupId, {
+              status: 'completed',
+              currentAction: `Completed: ${data.reason || 'Finished'}`,
+              progress: 100,
+              timeRemaining: 0,
+            });
             eventSource.close();
-            setIsWarmingUp(false);
-            toast(`Warmup completed for @${account.handle}`);
+            toast.info(`Warmup completed for @${account.handle}`);
           } else if (data.type === 'error') {
-            setWarmupProgress(`Error: ${data.message}`);
+            clearInterval(progressTimer);
+            updateWarmup(warmupId, {
+              status: 'error',
+              currentAction: `Error: ${data.message}`,
+              error: data.message,
+            });
             eventSource.close();
-            setIsWarmingUp(false);
-            toast(`Warmup error for @${account.handle}: ${data.message}`);
+            toast.info(`Warmup error for @${account.handle}: ${data.message}`);
           }
         } catch (err) {
           console.error('Error parsing warmup event:', err);
@@ -1277,16 +1338,18 @@ function AccountSidebarItem({
       };
       
       eventSource.onerror = () => {
-        setWarmupProgress("Connection error");
+        clearInterval(progressTimer);
+        updateWarmup(warmupId, {
+          status: 'error',
+          currentAction: 'Connection error',
+          error: 'Connection lost',
+        });
         eventSource.close();
-        setIsWarmingUp(false);
-        toast(`Warmup connection error for @${account.handle}`);
+        toast.info(`Warmup connection error for @${account.handle}`);
       };
       
     } catch (error) {
-      setWarmupProgress("Failed to start");
-      setIsWarmingUp(false);
-      toast(`Error starting warmup: ${error instanceof Error ? error.message : String(error)}`);
+      toast.info(`Error starting warmup: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   
@@ -1322,18 +1385,12 @@ function AccountSidebarItem({
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400">
             ID: {account.id}
-            {(account.bulk_profile_name || account.adspower_profile_id) && ` • Profile: ${account.bulk_profile_name || account.adspower_profile_id}`}
+            {account.bulk_profile_name && ` • Profile: ${account.bulk_profile_name}`}
           </div>
           {account.bulk_profile_name && (
             <div className="flex items-center gap-1 mt-1">
               <span className="rounded bg-blue-50 px-1 py-0.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">Bulk</span>
               <span className="text-xs">{account.bulk_profile_name}</span>
-            </div>
-          )}
-          {account.adspower_profile_id && (
-            <div className="flex items-center gap-1 mt-1">
-              <span className="rounded bg-gray-50 px-1 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">AdsPower</span>
-              <span className="text-xs">{account.adspower_profile_id}</span>
             </div>
           )}
         </div>
@@ -1371,9 +1428,9 @@ function AccountSidebarItem({
               >
                 {isWarmingUp ? "Warming..." : "Warmup"}
             </button>
-              {warmupProgress && (
+              {isWarmingUp && (
                 <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-32">
-                  {warmupProgress}
+                  {currentWarmup?.currentAction || "Warming up..."}
                 </span>
               )}
             </div>
@@ -1400,7 +1457,7 @@ function AccountDetails({
 }) {
   if (!account) return null;
 
-  const isUnlinked = !account.bulk_profile_name && !account.adspower_profile_id;
+  const isUnlinked = !account.bulk_profile_name;
 
   return (
     <div className="space-y-6">
@@ -1412,9 +1469,12 @@ function AccountDetails({
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Account ID: {account.id}
+            {account.instagram_username && (
+              <> • Instagram: @{account.instagram_username}</>
+            )}
           </p>
         </div>
-            <button 
+            <button
           onClick={onClose}
           className="rounded-md border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
             >
@@ -1454,14 +1514,13 @@ function AccountDetails({
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
             {account.bulk_profile_name ? 'Bulkcreate Profile' : 
-             account.adspower_profile_id ? 'AdsPower Profile' : 
              'No Profile Connected'}
           </p>
         </div>
       </div>
 
       {/* Profile Information */}
-      {(account.bulk_profile_name || account.adspower_profile_id) && (
+      {account.bulk_profile_name && (
         <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">
             Profile Information
@@ -1475,17 +1534,9 @@ function AccountDetails({
                 <code className="text-sm">{account.bulk_profile_name}</code>
               </div>
             )}
-            {account.adspower_profile_id && (
-              <div className="flex items-center gap-3">
-                <span className="rounded bg-gray-50 px-2 py-1 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">
-                  AdsPower
-                </span>
-                <code className="text-sm">{account.adspower_profile_id}</code>
-              </div>
-            )}
-            {(account.bulk_profile_name || account.adspower_profile_id) && (
+            {account.bulk_profile_name && (
               <div className="text-sm text-gray-600 dark:text-gray-400">
-                <strong>Profile:</strong> {account.bulk_profile_name || account.adspower_profile_id}
+                <strong>Profile:</strong> {account.bulk_profile_name}
               </div>
             )}
           </div>
@@ -1545,14 +1596,19 @@ function AccountDetails({
 }
 
 function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (id: number, error: string) => void }) {
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [loginState, setLoginState] = useState<string | null>(null);
   const [isCheckingLogin, setIsCheckingLogin] = useState(false);
-  const [isWarmingUp, setIsWarmingUp] = useState(false);
-  const [warmupProgress, setWarmupProgress] = useState<string | null>(null);
-  const [warmupTimeLeft, setWarmupTimeLeft] = useState<number | null>(null);
+  const [isSyncingUsername, setIsSyncingUsername] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const { startWarmup, updateWarmup, getWarmupByProfileId } = useWarmupProgress();
   
-  const hasProfile = !!(account.bulk_profile_name || account.adspower_profile_id);
+  // Check if this account is currently warming up
+  const currentWarmup = getWarmupByProfileId(account.id);
+  const isWarmingUp = !!currentWarmup && currentWarmup.status === 'running';
+  
+  const hasProfile = !!account.bulk_profile_name;
   const isUnlinked = !hasProfile;
 
   const handleCheckLogin = async (e: React.MouseEvent) => {
@@ -1565,10 +1621,10 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
     try {
       const result = await getLoginState(account.id);
       setLoginState(result.state);
-      toast(`Login state for @${account.handle}: ${result.state}`);
+      toast.info(`Login state for @${account.handle}: ${result.state}`);
     } catch (error) {
       setLoginState('error');
-      toast(`Error checking login state: ${error instanceof Error ? error.message : String(error)}`);
+      toast.info(`Error checking login state: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsCheckingLogin(false);
     }
@@ -1578,83 +1634,134 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
     e.stopPropagation();
     if (isWarmingUp) return;
     
-    setIsWarmingUp(true);
-    setWarmupProgress("Starting warmup...");
-    setWarmupTimeLeft(90); // 90 seconds duration (60-90s range)
-    
-    // Start countdown timer
-    const timer = setInterval(() => {
-      setWarmupTimeLeft(prev => {
-        if (prev === null || prev <= 1) {
-          clearInterval(timer);
-          return null;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    
     try {
-      const eventSource = startWarmupStream(account.id, "reels", 90, 3);
+      const duration = 90; // 90 seconds
+      const eventSource = startWarmupStream(account.id, "reels", duration, 3);
       
-          eventSource.onmessage = (event) => {
-            try {
-              const data = JSON.parse(event.data);
-              if (data.type === 'start') {
-                setWarmupProgress(`Starting warmup: ${data.content} mode`);
-              } else if (data.type === 'phase_switch') {
-                setWarmupProgress(`Switching to ${data.to} feed...`);
-              } else if (data.type === 'next_reel') {
-                setWarmupProgress(`Scrolling reels... ${data.count} movements`);
-              } else if (data.type === 'like') {
-                setWarmupProgress(`Liked ${data.liked} posts`);
-              } else if (data.type === 'scroll') {
-                setWarmupProgress(`Scrolling home feed... ${data.scrolled} scrolls`);
-              } else if (data.type === 'pause') {
-                setWarmupProgress(`Pausing... ${data.duration?.toFixed(1)}s`);
-              } else if (data.type === 'debug') {
-                setWarmupProgress(`Debug: ${data.message}`);
-              } else if (data.type === 'done') {
-                setWarmupProgress(`Warmup completed: ${data.reason} (${data.liked} likes, ${data.scrolled} scrolls)`);
-                setWarmupTimeLeft(null);
-                eventSource.close();
-                setIsWarmingUp(false);
-                clearInterval(timer);
-                toast(`Warmup completed for @${account.handle}: ${data.liked} likes, ${data.scrolled} scrolls`);
-              } else if (data.type === 'error') {
-                setWarmupProgress(`Error: ${data.message}`);
-                setWarmupTimeLeft(null);
-                eventSource.close();
-                setIsWarmingUp(false);
-                clearInterval(timer);
-                toast(`Warmup error for @${account.handle}: ${data.message}`);
-              }
-            } catch (err) {
-              console.error('Error parsing warmup event:', err);
-            }
-          };
+      // Start the warmup in global progress
+      const warmupId = startWarmup(account.id, account.handle, account.id, duration, eventSource);
+      
+      // Start progress timer
+      const startTime = Date.now();
+      const progressTimer = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(100, (elapsed / (duration * 1000)) * 100);
+        const timeRemaining = Math.max(0, duration - (elapsed / 1000));
+        
+        updateWarmup(warmupId, {
+          progress,
+          timeRemaining,
+        });
+        
+        if (progress >= 100) {
+          clearInterval(progressTimer);
+        }
+      }, 1000);
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'start') {
+            updateWarmup(warmupId, {
+              currentAction: `Starting warmup: ${data.content} mode`,
+            });
+          } else if (data.type === 'phase_switch') {
+            updateWarmup(warmupId, {
+              currentAction: `Switching to ${data.to} feed...`,
+            });
+          } else if (data.type === 'next_reel') {
+            updateWarmup(warmupId, {
+              currentAction: `Scrolling reels... ${data.count} movements`,
+            });
+          } else if (data.type === 'like') {
+            updateWarmup(warmupId, {
+              currentAction: `Liked ${data.liked} posts`,
+            });
+          } else if (data.type === 'scroll') {
+            updateWarmup(warmupId, {
+              currentAction: `Scrolling home feed... ${data.scrolled} scrolls`,
+            });
+          } else if (data.type === 'pause') {
+            updateWarmup(warmupId, {
+              currentAction: `Pausing... ${data.duration?.toFixed(1)}s`,
+            });
+          } else if (data.type === 'debug') {
+            updateWarmup(warmupId, {
+              currentAction: `Debug: ${data.message}`,
+            });
+          } else if (data.type === 'done') {
+            clearInterval(progressTimer);
+            updateWarmup(warmupId, {
+              status: 'completed',
+              currentAction: `Completed: ${data.reason} (${data.liked} likes, ${data.scrolled} scrolls)`,
+              progress: 100,
+              timeRemaining: 0,
+            });
+            eventSource.close();
+            toast.info(`Warmup completed for @${account.handle}: ${data.liked} likes, ${data.scrolled} scrolls`);
+          } else if (data.type === 'error') {
+            clearInterval(progressTimer);
+            updateWarmup(warmupId, {
+              status: 'error',
+              currentAction: `Error: ${data.message}`,
+              error: data.message,
+            });
+            eventSource.close();
+            toast.info(`Warmup error for @${account.handle}: ${data.message}`);
+          }
+        } catch (err) {
+          console.error('Error parsing warmup event:', err);
+        }
+      };
       
       eventSource.onerror = () => {
-        setWarmupProgress("Connection error");
-        setWarmupTimeLeft(null);
+        clearInterval(progressTimer);
+        updateWarmup(warmupId, {
+          status: 'error',
+          currentAction: 'Connection error',
+          error: 'Connection lost',
+        });
         eventSource.close();
-        setIsWarmingUp(false);
-        clearInterval(timer);
-        toast(`Warmup connection error for @${account.handle}`);
+        toast.info(`Warmup connection error for @${account.handle}`);
       };
       
     } catch (error) {
-      setWarmupProgress("Failed to start");
-      setWarmupTimeLeft(null);
-      setIsWarmingUp(false);
-      clearInterval(timer);
-      toast(`Error starting warmup: ${error instanceof Error ? error.message : String(error)}`);
+      toast.info(`Error starting warmup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const handleSyncUsername = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isSyncingUsername) return;
+    
+    setIsSyncingUsername(true);
+    setSyncMessage(null);
+    
+    try {
+      const result = await syncUsername(account.id);
+      setSyncMessage(result.message);
+      if (result.instagram_username) {
+        toast.info(`Username synced: @${result.instagram_username}`);
+        // Update the accounts cache so UI refreshes without page reload
+        qc.setQueryData(["accounts"], (old: any) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((a: any) => a.id === account.id ? { ...a, instagram_username: result.instagram_username } : a);
+        });
+      } else {
+        toast.info(`Sync failed: ${result.message}`);
+      }
+    } catch (error) {
+      setSyncMessage(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      toast.info(`Error syncing username: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSyncingUsername(false);
     }
   };
 
   return (
     <div className="rounded-xl border bg-white dark:border-gray-700 dark:bg-gray-800">
       {/* Header */}
-            <button
+      <button
         className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700"
         onClick={() => setOpen((s) => !s)}
       >
@@ -1664,16 +1771,14 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
               <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">Bulk</span>
               <code className="truncate text-xs text-gray-500">{account.bulk_profile_name}</code>
             </div>
-          ) : account.adspower_profile_id ? (
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-gray-50 px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">AdsPower</span>
-              <code className="truncate text-xs text-gray-500">{account.adspower_profile_id}</code>
-            </div>
           ) : (
             <span className="text-xs text-gray-400 dark:text-gray-500">No Profile</span>
           )}
           <span className="truncate text-sm text-gray-900 dark:text-white">
             @{account.handle}
+            {account.instagram_username && (
+              <span className="ml-2 text-gray-500 dark:text-gray-400">(@{account.instagram_username})</span>
+            )}
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -1687,14 +1792,16 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
       {open && (
         <div className="border-t px-4 py-3 dark:border-gray-700">
           <div className="space-y-3">
+            {/* removed per-row green Sync Username button as requested */}
             {/* Account Info */}
             <div className="text-sm">
               <div className="font-medium text-gray-900 dark:text-white">@{account.handle}</div>
               <div className="text-xs text-gray-500 dark:text-gray-400">
                 ID: {account.id}
-                {hasProfile && ` • Profile: ${account.bulk_profile_name || account.adspower_profile_id}`}
+                {hasProfile && ` • Profile: ${account.bulk_profile_name}`}
+                {account.instagram_username && ` • Instagram: @${account.instagram_username}`}
               </div>
-            </div>
+          </div>
 
             {/* Profile Status */}
             <div className="flex items-center gap-2">
@@ -1711,13 +1818,13 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
                     <div className="space-y-3">
                       {/* Login State Check */}
                       <div className="flex items-center gap-2">
-                        <button
+            <button 
                           onClick={handleCheckLogin}
                           disabled={isCheckingLogin}
                           className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700 disabled:bg-blue-400 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:dark:bg-blue-700"
                         >
                           {isCheckingLogin ? "Checking..." : "Check Login"}
-                        </button>
+            </button>
                         {loginState && (
                           <span className={`text-xs px-2 py-1 rounded ${
                             loginState === 'logged_in' ? 'bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-200' :
@@ -1732,19 +1839,35 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
                       
                       {/* Warmup Button */}
                       <div className="flex items-center gap-2">
-                        <button
+            <button 
                           onClick={handleWarmup}
                           disabled={isWarmingUp}
                           className="rounded-md bg-green-600 px-3 py-1 text-xs text-white hover:bg-green-700 disabled:bg-green-400 dark:bg-green-500 dark:hover:bg-green-600 disabled:dark:bg-green-700"
                         >
                           {isWarmingUp ? "Warming..." : "Warmup"}
-                          {warmupTimeLeft !== null && (
-                            <span className="ml-1 text-xs">({warmupTimeLeft}s)</span>
+                          {isWarmingUp && currentWarmup?.timeRemaining && (
+                            <span className="ml-1 text-xs">({Math.round(currentWarmup.timeRemaining)}s)</span>
                           )}
-                        </button>
-                        {warmupProgress && (
+            </button>
+                        {isWarmingUp && (
                           <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-32">
-                            {warmupProgress}
+                            {currentWarmup?.currentAction || "Warming up..."}
+                          </span>
+                        )}
+                      </div>
+                      
+                      {/* Sync Username Button */}
+                      <div className="flex items-center gap-2">
+            <button 
+                          onClick={handleSyncUsername}
+                          disabled={isSyncingUsername}
+                          className="rounded-md bg-purple-600 px-3 py-1 text-xs text-white hover:bg-purple-700 disabled:bg-purple-400 dark:bg-purple-500 dark:hover:bg-purple-600 disabled:dark:bg-purple-700"
+                        >
+                          {isSyncingUsername ? "Syncing..." : "Sync Username"}
+            </button>
+                        {syncMessage && (
+                          <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-32">
+                            {syncMessage}
                           </span>
                         )}
                       </div>
@@ -1752,7 +1875,7 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
                 
                 {/* Unlink Profile Button */}
                 <div className="flex gap-2">
-                  <button
+            <button 
                     onClick={async () => {
                       if (confirm(`Are you sure you want to unlink this profile? This will remove the connection to the bulkcreate profile.`)) {
                         try {
@@ -1769,21 +1892,21 @@ function AccountRowItem({ account, onError }: { account: AccountRow, onError?: (
                           });
                           
                           if (response.ok) {
-                            toast("Profile unlinked successfully!");
+                            toast.info("Profile unlinked successfully!");
                             // Refresh the page or invalidate queries
                             window.location.reload();
                           } else {
-                            toast(`Error unlinking profile: ${response.statusText}`);
+                            toast.info(`Error unlinking profile: ${response.statusText}`);
                           }
                         } catch (error) {
-                          toast(`Error unlinking profile: ${error instanceof Error ? error.message : String(error)}`);
+                          toast.info(`Error unlinking profile: ${error instanceof Error ? error.message : String(error)}`);
                         }
                       }
                     }}
                     className="rounded-md bg-red-600 px-3 py-1 text-xs text-white hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600"
                   >
                     Unlink Profile
-                  </button>
+            </button>
                 </div>
               </div>
             )}
@@ -1827,7 +1950,7 @@ function OrphanedLinksManager({ accounts }: { accounts: any[] }) {
       try {
         const result = await cleanupOrphanedLinks();
         if (result.cleaned_count > 0) {
-          toast(`Auto cleanup: cleaned ${result.cleaned_count} orphaned links`);
+          toast.info(`Auto cleanup: cleaned ${result.cleaned_count} orphaned links`);
           qc.invalidateQueries({ queryKey: ["accounts"] });
                       qc.invalidateQueries({ queryKey: ["profiles"] });
                     }
@@ -1844,15 +1967,15 @@ function OrphanedLinksManager({ accounts }: { accounts: any[] }) {
     onSuccess: (data) => {
       setOrphanedLinks(data.orphaned_accounts || []);
       if (data.orphaned_count > 0) {
-        toast(`Found ${data.orphaned_count} orphaned links`);
+        toast.info(`Found ${data.orphaned_count} orphaned links`);
         setShowOrphanedSection(true);
       } else {
-        toast("No orphaned links found");
+        toast.info("No orphaned links found");
         setShowOrphanedSection(false);
       }
     },
     onError: (error) => {
-      toast(`Detection failed: ${error.message}`);
+      toast.info(`Detection failed: ${error.message}`);
       // Show a fallback section with manual detection
       setShowOrphanedSection(true);
       setOrphanedLinks([]);
@@ -1862,7 +1985,7 @@ function OrphanedLinksManager({ accounts }: { accounts: any[] }) {
   const cleanupAllMutation = useMutation({
     mutationFn: cleanupOrphanedLinks,
     onSuccess: (data) => {
-      toast(`Successfully cleaned ${data.cleaned_count} orphaned links`);
+      toast.info(`Successfully cleaned ${data.cleaned_count} orphaned links`);
       setOrphanedLinks([]);
       setSelectedLinks(new Set());
       setShowOrphanedSection(false);
@@ -1870,21 +1993,21 @@ function OrphanedLinksManager({ accounts }: { accounts: any[] }) {
       qc.invalidateQueries({ queryKey: ["profiles"] });
     },
     onError: (error) => {
-      toast(`Error cleaning orphaned links: ${error.message}`);
+      toast.info(`Error cleaning orphaned links: ${error.message}`);
     }
   });
 
   const cleanupSelectedMutation = useMutation({
     mutationFn: cleanupSelectedOrphanedLinks,
     onSuccess: (data) => {
-      toast(`Successfully cleaned ${data.cleaned_count} selected orphaned links`);
+      toast.info(`Successfully cleaned ${data.cleaned_count} selected orphaned links`);
       setOrphanedLinks(prev => prev.filter(link => !selectedLinks.has(link.id)));
       setSelectedLinks(new Set());
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["profiles"] });
     },
     onError: (error) => {
-      toast(`Error cleaning selected links: ${error.message}`);
+      toast.info(`Error cleaning selected links: ${error.message}`);
     }
   });
 
@@ -1893,10 +2016,10 @@ function OrphanedLinksManager({ accounts }: { accounts: any[] }) {
     if (accounts && accounts.length > 0) {
       const linkedAccounts = accounts.filter(account => account.bulk_profile_name);
       setOrphanedLinks(linkedAccounts);
-      toast(`Refreshed: Found ${linkedAccounts.length} linked accounts`);
+      toast.info(`Refreshed: Found ${linkedAccounts.length} linked accounts`);
     } else {
       setOrphanedLinks([]);
-      toast("No accounts data available");
+      toast.info("No accounts data available");
     }
   };
 
@@ -1914,7 +2037,7 @@ function OrphanedLinksManager({ accounts }: { accounts: any[] }) {
 
   const handleCleanupSelected = async () => {
     if (selectedLinks.size === 0) {
-      toast("Please select orphaned links to clean up");
+      toast.info("Please select orphaned links to clean up");
       return;
     }
     if (!confirm(`Are you sure you want to clean up ${selectedLinks.size} selected orphaned links?`)) {
@@ -1951,10 +2074,10 @@ function OrphanedLinksManager({ accounts }: { accounts: any[] }) {
     setAutoCleanupEnabled(newEnabled);
     try {
       await updateAutoCleanupSettings(newEnabled, cleanupInterval);
-      toast(`Auto cleanup ${newEnabled ? 'enabled' : 'disabled'}`);
+      toast.info(`Auto cleanup ${newEnabled ? 'enabled' : 'disabled'}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      toast(`Failed to update auto cleanup settings: ${errorMessage}`);
+      toast.info(`Failed to update auto cleanup settings: ${errorMessage}`);
       setAutoCleanupEnabled(!newEnabled); // Revert on error
     }
   };

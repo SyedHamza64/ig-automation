@@ -25,3 +25,25 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Development files
+.vscode/
+*.log
+debug_*.ps1
+debug_*.py
+test_*.ps1
+test_*.py
+*_backup.*
+*_fixed.*
+*_temp.*
+start_*.py
+start_*.ps1
+optimize_*.ps1
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~

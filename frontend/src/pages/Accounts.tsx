@@ -15,6 +15,7 @@ import {
   type AccountRow,
   type LoginState
 } from "../api/accounts";
+import { syncUsernamesBulk } from "../api/accounts";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Table, TBody, TD } from "../components/ui/Table";
 
@@ -28,6 +29,9 @@ export default function AccountsPage() {
   
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const queryClient = useQueryClient();
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<[number, number] | null>(null);
 
   // Load accounts list
   const { data: accounts = [], isLoading: accountsLoading, error: accountsError } = useQuery({
@@ -103,6 +107,37 @@ export default function AccountsPage() {
               {unlinkedAccounts?.count > 0 && (
                 <DeleteUnlinkedAccountsButton />
               )}
+              <button
+                onClick={async () => {
+                  if (syncingAll) return;
+                  setSyncingAll(true);
+                  setSyncProgress([0, accounts.length]);
+                  try {
+                    const res = await syncUsernamesBulk(accounts.map(a => a.id), 5);
+                    // update cache based on results
+                    queryClient.setQueryData(["accounts"], (old: any) => {
+                      if (!Array.isArray(old)) return old;
+                      const idToUsername = new Map<number, string>();
+                      for (const r of res.results) {
+                        if (r.status === 'ok' && r.instagram_username) {
+                          idToUsername.set(r.id, r.instagram_username);
+                        }
+                      }
+                      return old.map((a: any) => idToUsername.has(a.id) ? { ...a, instagram_username: idToUsername.get(a.id) } : a);
+                    });
+                    setSyncProgress([res.updated, res.count]);
+                  } finally {
+                    setTimeout(() => {
+                      setSyncingAll(false);
+                      setSyncProgress(null);
+                    }, 400);
+                  }
+                }}
+                disabled={syncingAll}
+                className={`rounded-md px-4 py-2 text-sm text-white ${syncingAll ? 'bg-green-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600'}`}
+              >
+                {syncingAll && syncProgress ? `Syncing ${syncProgress[0]}/${syncProgress[1]}...` : 'Sync All Usernames'}
+              </button>
             </div>
             <div className="text-sm text-gray-600 dark:text-gray-400">
               {unlinkedAccounts?.count > 0 && (
@@ -196,7 +231,7 @@ function AccountDetails({ account }: { account: AccountRow }) {
   });
 
   // Login state (only if account has profile connections)
-  const hasProfileConnection = !!(account.bulk_profile_name || account.adspower_profile_id);
+  const hasProfileConnection = !!account.bulk_profile_name;
   const { data: loginState } = useQuery({
     queryKey: ["login-state", account.id],
     queryFn: () => getLoginState(account.id),
@@ -235,12 +270,6 @@ function AccountDetails({ account }: { account: AccountRow }) {
               <div className="flex items-center gap-2 mt-1">
                 <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">Bulkcreate</span>
                 <span className="text-xs">{account.bulk_profile_name}</span>
-              </div>
-            )}
-            {account.adspower_profile_id && (
-              <div className="flex items-center gap-2 mt-1">
-                <span className="rounded bg-gray-50 px-2 py-0.5 text-xs text-gray-700">AdsPower</span>
-                <span className="text-xs">{account.adspower_profile_id}</span>
               </div>
             )}
           </div>
@@ -438,7 +467,7 @@ function AccountListItem({ account, isSelected, onSelect }: { account: AccountRo
     }
   };
 
-  const hasProfileConnection = !!(account.bulk_profile_name || account.adspower_profile_id);
+  const hasProfileConnection = !!account.bulk_profile_name;
   const isUnlinked = !hasProfileConnection;
 
   return (
@@ -465,16 +494,15 @@ function AccountListItem({ account, isSelected, onSelect }: { account: AccountRo
           <div className="text-xs text-gray-500 dark:text-gray-400">
             ID: {account.id}
             {hasProfileConnection && ` • Profile: ${hasProfileConnection}`}
+            {account.instagram_username && (
+              <>
+                {' '}• Instagram: @{account.instagram_username}
+              </>
+            )}
             {account.bulk_profile_name && (
               <div className="flex items-center gap-1 mt-1">
                 <span className="rounded bg-blue-50 px-1 py-0.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">Bulk</span>
                 <span className="text-xs">{account.bulk_profile_name}</span>
-              </div>
-            )}
-            {account.adspower_profile_id && (
-              <div className="flex items-center gap-1 mt-1">
-                <span className="rounded bg-gray-50 px-1 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">AdsPower</span>
-                <span className="text-xs">{account.adspower_profile_id}</span>
               </div>
             )}
           </div>
